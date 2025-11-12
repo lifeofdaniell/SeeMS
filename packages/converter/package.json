@@ -1,0 +1,32 @@
+{
+  "name": "@see-ms/converter",
+  "version": "0.1.0",
+  "description": "Convert Webflow exports to Nuxt 3 projects with auto-detected CMS mappings",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "cms": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@see-ms/types": "workspace:*",
+    "cheerio": "^1.0.0-rc.12",
+    "commander": "^11.1.0",
+    "fs-extra": "^11.2.0",
+    "glob": "^10.3.10",
+    "picocolors": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/fs-extra": "^11.0.4",
+    "tsup": "^8.0.1",
+    "typescript": "^5.3.3"
+  }
+}
