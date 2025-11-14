@@ -81,6 +81,8 @@ export interface ConversionOptions {
   generateStrapi?: boolean;
   /** CMS backend type */
   cmsBackend?: 'strapi' | 'contentful' | 'sanity';
+  /** Boilerplate source - GitHub URL or local path */
+  boilerplate?: string;
 }
 
 export interface StrapiFieldType {

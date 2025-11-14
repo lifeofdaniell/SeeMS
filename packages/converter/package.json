@@ -1,14 +1,15 @@
 {
   "name": "@see-ms/converter",
-  "version": "0.1.0",
-  "description": "Convert Webflow exports to Nuxt 3 projects with auto-detected CMS mappings",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "version": "0.1.1",
+  "description": "CLI for converting HTML files to Nuxt 3 with CMS integration",
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
   "bin": {
-    "cms": "./dist/cli.js"
+    "cms": "./dist/cli.mjs"
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md"
   ],
   "scripts": {
     "dev": "tsup --watch",
@@ -17,7 +18,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@see-ms/types": "workspace:*",
+    "@see-ms/types": "^0.1.0",
     "cheerio": "^1.0.0-rc.12",
     "commander": "^11.1.0",
     "fs-extra": "^11.2.0",
@@ -28,5 +29,18 @@
     "@types/fs-extra": "^11.0.4",
     "tsup": "^8.0.1",
     "typescript": "^5.3.3"
-  }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "webflow",
+    "nuxt",
+    "cms",
+    "converter",
+    "strapi",
+    "contentful",
+    "sanity"
+  ],
+  "license": "MIT"
 }
