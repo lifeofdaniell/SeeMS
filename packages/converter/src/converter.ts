@@ -20,6 +20,7 @@ import {
   updateNuxtConfig,
   writeEmbeddedStyles,
 } from './config-updater';
+import { createEditorPlugin, addEditorDependency, createSaveEndpoint } from './editor-integration';
 import { setupBoilerplate } from './boilerplate';
 import { generateManifest, writeManifest } from './manifest';
 import { manifestToSchemas } from './transformer';
@@ -93,7 +94,7 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
     const pagesDir = path.join(outputDir, 'pages');
     const manifest = await generateManifest(pagesDir);
     await writeManifest(outputDir, manifest);
-    
+
     const totalFields = Object.values(manifest.pages).reduce(
       (sum, page) => sum + Object.keys(page.fields || {}).length,
       0
@@ -102,7 +103,7 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
       (sum, page) => sum + Object.keys(page.collections || {}).length,
       0
     );
-    
+
     console.log(pc.green(`  ✓ Detected ${totalFields} fields across ${Object.keys(manifest.pages).length} pages`));
     console.log(pc.green(`  ✓ Detected ${totalCollections} collections`));
     console.log(pc.green('  ✓ Generated cms-manifest.json'));
@@ -112,7 +113,7 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
     const schemas = manifestToSchemas(manifest);
     await writeAllSchemas(outputDir, schemas);
     await createStrapiReadme(outputDir);
-    
+
     console.log(pc.green(`  ✓ Generated ${Object.keys(schemas).length} Strapi content types`));
     console.log(pc.dim('    View schemas in: strapi/src/api/'));
 
@@ -139,6 +140,14 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
       console.log(pc.dim('    Please add CSS files manually'));
     }
 
+      console.log(pc.blue('\n🎨 Setting up editor overlay...'));
+      await createEditorPlugin(outputDir);
+      await addEditorDependency(outputDir);
+      await createSaveEndpoint(outputDir);
+      console.log(pc.green('  ✓ Editor plugin created'));
+      console.log(pc.green('  ✓ Editor dependency added'));
+      console.log(pc.green('  ✓ Save endpoint created'));
+
     // Success!
     console.log(pc.green('\n✅ Conversion completed successfully!'));
     console.log(pc.cyan('\n📋 Next steps:'));
@@ -146,6 +155,8 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
     console.log(pc.dim('  2. Review cms-manifest.json'));
     console.log(pc.dim('  3. Copy strapi/ schemas to your Strapi project'));
     console.log(pc.dim('  4. pnpm install && pnpm dev'));
+    console.log(pc.dim('  5. Visit http://localhost:3000?preview=true to edit inline!'));
+
   } catch (error) {
     console.error(pc.red('\n❌ Conversion failed:'));
     console.error(pc.red(error instanceof Error ? error.message : String(error)));

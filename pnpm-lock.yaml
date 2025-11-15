@@ -24,7 +24,7 @@ importers:
   packages/converter:
     dependencies:
       '@see-ms/types':
-        specifier: workspace:*
+        specifier: ^0.1.0
         version: link:../types
       cheerio:
         specifier: ^1.0.0-rc.12
