@@ -4,6 +4,7 @@
 
 import type { ConversionOptions } from '@see-ms/types';
 import pc from 'picocolors';
+import path from 'path';
 import fs from 'fs-extra';
 import {
   scanAssets,
@@ -20,6 +21,9 @@ import {
   writeEmbeddedStyles,
 } from './config-updater';
 import { setupBoilerplate } from './boilerplate';
+import { generateManifest, writeManifest } from './manifest';
+import { manifestToSchemas } from './transformer';
+import { writeAllSchemas, createStrapiReadme } from './schema-writer';
 
 export async function convertWebflowExport(options: ConversionOptions): Promise<void> {
   const { inputDir, outputDir, boilerplate } = options;
@@ -84,7 +88,35 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
     // Step 6: Format Vue files with Prettier
     await formatVueFiles(outputDir);
 
-    // Step 7: Deduplicate and write embedded styles to main.css
+    // Step 7: Generate CMS manifest
+    console.log(pc.blue('\n🔍 Analyzing pages for CMS fields...'));
+    const pagesDir = path.join(outputDir, 'pages');
+    const manifest = await generateManifest(pagesDir);
+    await writeManifest(outputDir, manifest);
+    
+    const totalFields = Object.values(manifest.pages).reduce(
+      (sum, page) => sum + Object.keys(page.fields || {}).length,
+      0
+    );
+    const totalCollections = Object.values(manifest.pages).reduce(
+      (sum, page) => sum + Object.keys(page.collections || {}).length,
+      0
+    );
+    
+    console.log(pc.green(`  ✓ Detected ${totalFields} fields across ${Object.keys(manifest.pages).length} pages`));
+    console.log(pc.green(`  ✓ Detected ${totalCollections} collections`));
+    console.log(pc.green('  ✓ Generated cms-manifest.json'));
+
+    // Step 8: Generate Strapi schemas
+    console.log(pc.blue('\n📋 Generating Strapi schemas...'));
+    const schemas = manifestToSchemas(manifest);
+    await writeAllSchemas(outputDir, schemas);
+    await createStrapiReadme(outputDir);
+    
+    console.log(pc.green(`  ✓ Generated ${Object.keys(schemas).length} Strapi content types`));
+    console.log(pc.dim('    View schemas in: strapi/src/api/'));
+
+    // Step 9: Deduplicate and write embedded styles to main.css
     if (allEmbeddedStyles.trim()) {
       console.log(pc.blue('\n✨ Writing embedded styles...'));
       const dedupedStyles = deduplicateStyles(allEmbeddedStyles);
@@ -92,12 +124,12 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
       console.log(pc.green('  ✓ Embedded styles added to main.css'));
     }
 
-    // Step 8: Generate/overwrite webflow-assets.ts
+    // Step 10: Generate/overwrite webflow-assets.ts
     console.log(pc.blue('\n🔧 Generating webflow-assets.ts plugin...'));
     await writeWebflowAssetPlugin(outputDir, assets.css);
     console.log(pc.green('  ✓ Plugin generated (existing file overwritten)'));
 
-    // Step 9: Update nuxt.config.ts
+    // Step 11: Update nuxt.config.ts
     console.log(pc.blue('\n⚙️  Updating nuxt.config.ts...'));
     try {
       await updateNuxtConfig(outputDir, assets.css);
@@ -111,8 +143,9 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
     console.log(pc.green('\n✅ Conversion completed successfully!'));
     console.log(pc.cyan('\n📋 Next steps:'));
     console.log(pc.dim(`  1. cd ${outputDir}`));
-    console.log(pc.dim('  2. pnpm install'));
-    console.log(pc.dim('  3. pnpm dev'));
+    console.log(pc.dim('  2. Review cms-manifest.json'));
+    console.log(pc.dim('  3. Copy strapi/ schemas to your Strapi project'));
+    console.log(pc.dim('  4. pnpm install && pnpm dev'));
   } catch (error) {
     console.error(pc.red('\n❌ Conversion failed:'));
     console.error(pc.red(error instanceof Error ? error.message : String(error)));
