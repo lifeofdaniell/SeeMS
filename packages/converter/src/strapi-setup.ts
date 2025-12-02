@@ -7,6 +7,7 @@ import fs from 'fs-extra';
 import path from 'path';
 import { glob } from 'glob';
 import FormData from 'form-data';
+import {execSync} from "child_process";
 
 // @ts-ignore
 interface SchemaFile {
@@ -24,6 +25,7 @@ interface SetupOptions {
 
 /**
  * Main setup function
+ * Exported for use by CLI and direct execution
  */
 export async function completeSetup(options: SetupOptions): Promise<void> {
     const { projectDir, strapiDir, strapiUrl = 'http://localhost:1337', apiToken } = options;
@@ -107,12 +109,30 @@ async function installSchemas(projectDir: string, strapiDir: string): Promise<vo
         const schema = await fs.readJson(schemaPath);
         const singularName = schema.info?.singularName || path.basename(file, '.json');
 
-        const apiPath = path.join(strapiDir, 'src', 'api', singularName);
-        const contentTypesPath = path.join(apiPath, 'content-types', singularName);
-        const targetPath = path.join(contentTypesPath, 'schema.json');
+        console.log(`   Generating ${singularName}...`);
 
-        await fs.ensureDir(contentTypesPath);
-        await fs.writeJson(targetPath, schema, { spaces: 2 });
+        try {
+            execSync(`npx strapi generate api ${singularName}`, {
+                cwd: strapiDir,
+                stdio: 'pipe',
+            });
+
+            const apiPath = path.join(strapiDir, 'src', 'api', singularName);
+            const contentTypesPath = path.join(apiPath, 'content-types', singularName);
+            const targetPath = path.join(contentTypesPath, 'schema.json');
+
+            await fs.writeJson(targetPath, schema, { spaces: 2 });
+            console.log(`   ✓ Created ${singularName}`);
+        } catch (error) {
+            console.error(`   ✗ Failed to generate ${singularName}`);
+        }
+
+        // const apiPath = path.join(strapiDir, 'src', 'api', singularName);
+        // const contentTypesPath = path.join(apiPath, 'content-types', singularName);
+        // const targetPath = path.join(contentTypesPath, 'schema.json');
+        //
+        // await fs.ensureDir(contentTypesPath);
+        // await fs.writeJson(targetPath, schema, { spaces: 2 });
     }
 }
 
@@ -159,7 +179,7 @@ async function uploadAllImages(
     apiToken: string
 ): Promise<Map<string, number>> {
     const mediaMap = new Map<string, number>();
-    const imagesDir = path.join(projectDir, 'public', 'images');
+    const imagesDir = path.join(projectDir, 'public', 'assets', 'images');
 
     if (!(await fs.pathExists(imagesDir))) {
         console.log('   No images directory found');
@@ -241,29 +261,70 @@ async function seedContent(
     }
 
     const seedData = await fs.readJson(seedPath);
+
+    const schemasDir = path.join(projectDir, 'cms-schemas');
+    const schemas = new Map<string, any>();
+
+    const schemaFiles = await glob('*.json', { cwd: schemasDir });
+    for (const file of schemaFiles) {
+        const schema = await fs.readJson(path.join(schemasDir, file));
+        const name = path.basename(file, '.json');
+        schemas.set(name, schema);
+    }
+
     let successCount = 0;
     let totalCount = 0;
 
     for (const [contentType, data] of Object.entries(seedData)) {
+        const schema = schemas.get(contentType);
+
+        if (!schema) {
+            console.log(`   ⚠️  No schema found for ${contentType}, skipping...`);
+            continue;
+        }
+
+        const singularName = schema.info.singularName;
+        const pluralName = schema.info.pluralName;
+        // const isCollection = schema.kind === 'collectionType';
+
         // Check if it's a collection (array) or single type (object)
         if (Array.isArray(data)) {
-            // Collection type
+            // Collection type - use pluralName
             console.log(`   Seeding ${contentType} (${data.length} items)...`);
 
             for (const item of data) {
                 totalCount++;
                 const processedItem = processMediaFields(item, mediaMap);
-                const success = await createEntry(contentType, processedItem, strapiUrl, apiToken);
+                const success = await createEntry(pluralName, processedItem, strapiUrl, apiToken);
                 if (success) successCount++;
             }
         } else {
-            // Single type
+            // Single type - use singularName
             console.log(`   Seeding ${contentType}...`);
             totalCount++;
             const processedData = processMediaFields(data, mediaMap);
-            const success = await createOrUpdateSingleType(contentType, processedData, strapiUrl, apiToken);
+            const success = await createOrUpdateSingleType(singularName, processedData, strapiUrl, apiToken);
             if (success) successCount++;
         }
+
+        // if (Array.isArray(data)) {
+        //     // Collection type
+        //     console.log(`   Seeding ${contentType} (${data.length} items)...`);
+        //
+        //     for (const item of data) {
+        //         totalCount++;
+        //         const processedItem = processMediaFields(item, mediaMap);
+        //         const success = await createEntry(contentType, processedItem, strapiUrl, apiToken);
+        //         if (success) successCount++;
+        //     }
+        // } else {
+        //     // Single type
+        //     console.log(`   Seeding ${contentType}...`);
+        //     totalCount++;
+        //     const processedData = processMediaFields(data, mediaMap);
+        //     const success = await createOrUpdateSingleType(contentType, processedData, strapiUrl, apiToken);
+        //     if (success) successCount++;
+        // }
     }
 
     console.log(`   ✓ Successfully seeded ${successCount}/${totalCount} entries`);
@@ -315,8 +376,15 @@ async function createEntry(
             body: JSON.stringify({ data }),
         });
 
-        return response.ok;
-    } catch {
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error(`   ✗ Failed to create ${contentType}: ${response.status} - ${errorText}`);
+            return false;
+        }
+
+        return true;
+    } catch (error) {
+        console.error(`   ✗ Error creating ${contentType}:`, error);
         return false;
     }
 }
@@ -340,8 +408,15 @@ async function createOrUpdateSingleType(
             body: JSON.stringify({ data }),
         });
 
-        return response.ok;
-    } catch {
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error(`   ✗ Failed to update ${contentType}: ${response.status} - ${errorText}`);
+            return false;
+        }
+
+        return true;
+    } catch (error) {
+        console.error(`   ✗ Error updating ${contentType}:`, error);
         return false;
     }
 }
@@ -371,7 +446,7 @@ async function main() {
     });
 }
 
-// Run if executed directly
+// Run if executed directly (ESM compatible)
 // When imported, this won't run. When executed directly, it will.
 const isMainModule = process.argv[1] && process.argv[1].endsWith('strapi-setup.ts');
 if (isMainModule) {

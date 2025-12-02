@@ -71,6 +71,7 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
             const html = await readHTMLFile(inputDir, htmlFile);
             const pageName = htmlFile.replace('.html', '').replace(/\//g, '-');
             htmlContentMap.set(pageName, html);
+            console.log(pc.dim(`  Stored: ${pageName} from ${htmlFile}`));
         }
 
         // Step 6: Convert HTML files to Vue components
@@ -122,22 +123,24 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
 
         // Step 9: Extract content from original HTML
         console.log(pc.blue('\n📝 Extracting content from HTML...'));
+        console.log(pc.dim(`  HTML map has ${htmlContentMap.size} entries`));
+        console.log(pc.dim(`  Manifest has ${Object.keys(manifest.pages).length} pages`));
+
         const extractedContent = extractAllContent(htmlContentMap, manifest);
         const seedData = formatForStrapi(extractedContent);
 
         await writeSeedData(outputDir, seedData);
         await createSeedReadme(outputDir);
 
-        const totalExtracted = Object.keys(seedData).reduce((sum, key) => {
+        // Count pages that had content extracted (not boilerplate-only pages)
+        const pagesWithContent = Object.keys(seedData).filter(key => {
             const data = seedData[key];
-            if (Array.isArray(data)) {
-                return sum + data.length;
-            }
-            return sum + Object.keys(data).length;
-        }, 0);
+            if (Array.isArray(data)) return data.length > 0;
+            return Object.keys(data).length > 0;
+        }).length;
 
-        console.log(pc.green(`  ✓ Extracted ${totalExtracted} content items`));
-        console.log(pc.green('  ✓ Generated cms-seed/seed-data.json'));
+        console.log(pc.green(`  ✓ Extracted content from ${pagesWithContent} pages`));
+        console.log(pc.green(`  ✓ Generated cms-seed/seed-data.json`));
 
         // Step 10: Generate Strapi schemas
         console.log(pc.blue('\n📋 Generating Strapi schemas...'));
