@@ -46,3 +46,4 @@ coverage/
 *.tmp
 *.temp
 .cache/
+strapi-dev/
