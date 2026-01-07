@@ -20,19 +20,86 @@ interface SetupOptions {
   strapiDir: string;
   strapiUrl?: string;
   apiToken?: string;
+  ignoreSavedToken?: boolean;
 }
+
+const ENV_FILE = ".env";
+
+/**
+ * Load config from .env file in project directory
+ */
+async function loadConfig(projectDir: string): Promise<{ apiToken?: string; strapiUrl?: string }> {
+  const envPath = path.join(projectDir, ENV_FILE);
+  if (await fs.pathExists(envPath)) {
+    try {
+      const content = await fs.readFile(envPath, "utf-8");
+      const config: { apiToken?: string; strapiUrl?: string } = {};
+
+      for (const line of content.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#")) continue;
+
+        const [key, ...valueParts] = trimmed.split("=");
+        const value = valueParts.join("=").trim();
+
+        if (key === "STRAPI_API_TOKEN") {
+          config.apiToken = value;
+        } else if (key === "STRAPI_URL") {
+          config.strapiUrl = value;
+        }
+      }
+      return config;
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+/**
+ * Save/append config to .env file in project directory
+ */
+async function saveConfig(projectDir: string, config: { apiToken?: string; strapiUrl?: string }): Promise<void> {
+  const envPath = path.join(projectDir, ENV_FILE);
+  let content = "";
+
+  // Read existing content if file exists
+  if (await fs.pathExists(envPath)) {
+    content = await fs.readFile(envPath, "utf-8");
+
+    // Remove existing STRAPI_ entries to avoid duplicates
+    content = content
+      .split("\n")
+      .filter(line => !line.startsWith("STRAPI_API_TOKEN=") && !line.startsWith("STRAPI_URL="))
+      .join("\n");
+
+    if (content && !content.endsWith("\n")) {
+      content += "\n";
+    }
+  }
+
+  // Add new values
+  if (config.strapiUrl) {
+    content += `STRAPI_URL=${config.strapiUrl}\n`;
+  }
+  if (config.apiToken) {
+    content += `STRAPI_API_TOKEN=${config.apiToken}\n`;
+  }
+
+  await fs.writeFile(envPath, content);
+}
+
 
 /**
  * Main setup function
  * Exported for use by CLI and direct execution
  */
 export async function completeSetup(options: SetupOptions): Promise<void> {
-  const {
-    projectDir,
-    strapiDir,
-    strapiUrl = "http://localhost:1337",
-    apiToken
-  } = options;
+  const { projectDir, strapiDir, strapiUrl: optionUrl, apiToken: optionToken, ignoreSavedToken } = options;
+
+  // Load saved config
+  const savedConfig = await loadConfig(projectDir);
+  const strapiUrl = optionUrl || savedConfig.strapiUrl || "http://localhost:1337";
 
   console.log("🚀 Starting complete Strapi setup...\n");
 
@@ -61,17 +128,26 @@ export async function completeSetup(options: SetupOptions): Promise<void> {
   console.log("✓ Connected to Strapi\n");
 
   // Step 4: Get API token
-  let token = apiToken;
-  if (!token) {
+  let token = optionToken || (!ignoreSavedToken ? savedConfig.apiToken : undefined);
+  if (token && !ignoreSavedToken) {
+    console.log("🔑 Step 4: Using saved API token");
+  } else if (token && optionToken) {
+    console.log("🔑 Step 4: Using provided API token");
+  } else {
     console.log("🔑 Step 4: API Token needed");
     console.log("   1. Open Strapi admin: http://localhost:1337/admin");
     console.log("   2. Go to Settings > API Tokens > Create new API Token");
-    console.log(
-      "   3. Name: \"Seed Script\", Type: \"Full access\", Duration: \"Unlimited\""
-    );
+    console.log("   3. Name: \"Seed Script\", Type: \"Full access\", Duration: \"Unlimited\"");
     console.log("   4. Copy the token and paste it here:\n");
 
     token = await promptForToken();
+
+    // Ask to save token
+    const saveToken = await promptYesNo("   Save token for future use?");
+    if (saveToken) {
+      await saveConfig(projectDir, { ...savedConfig, apiToken: token, strapiUrl });
+      console.log("   ✓ Token saved to .env");
+    }
     console.log("");
   }
 
@@ -257,6 +333,69 @@ async function promptForToken(): Promise<string> {
 }
 
 /**
+ * Prompt user for yes/no
+ */
+async function promptYesNo(question: string): Promise<boolean> {
+  const rl = createReadline();
+  return new Promise((resolve) => {
+    rl.question(`${question} (y/n): `, (answer) => {
+      rl.close();
+      resolve(answer.trim().toLowerCase() === "y" || answer.trim().toLowerCase() === "yes");
+    });
+  });
+}
+
+/**
+ * Fetch existing media from Strapi
+ * Returns a map of filename to media ID
+ */
+
+async function getExistingMedia(
+  strapiUrl: string,
+  apiToken: string
+): Promise<Map<string, number>> {
+
+  const existingMedia = new Map<string, number>();
+  try {
+    // Fetch all files from Strapi media library (paginated)
+    let page = 1;
+    const pageSize = 100;
+    let hasMore = true;
+
+    while (hasMore) {
+      const response = await fetch(
+        `${strapiUrl}/api/upload/files?pagination[page]=${page}&pagination[pageSize]=${pageSize}`,
+        {
+          headers: {
+            Authorization: `Bearer ${apiToken}`
+          }
+        }
+      );
+
+      if (!response.ok) {
+        break;
+      }
+
+      const data = await response.json();
+      // @ts-ignore
+      const files = Array.isArray(data) ? data : data.results || [];
+
+      for (const file of files) {
+        if (file.name) {
+          existingMedia.set(file.name, file.id);
+        }
+      }
+
+      hasMore = files.length === pageSize;
+      page++;
+    }
+  } catch (error) {
+    // Silently continue - we'll just upload all images
+  }
+  return existingMedia;
+}
+
+/**
  * Upload all images to Strapi media library
  * Returns a map of original paths to Strapi media IDs
  */
@@ -278,25 +417,39 @@ async function uploadAllImages(
     absolute: false
   });
 
-  console.log(`   Uploading ${imageFiles.length} images...`);
+  // Fetch existing media to skip duplicates
+  console.log(`   Checking for existing media...`);
+  const existingMedia = await getExistingMedia(strapiUrl, apiToken);
+  let uploadedCount = 0;
+  let skippedCount = 0;
+  console.log(`   Processing ${imageFiles.length} images...`);
 
   for (const imageFile of imageFiles) {
+    const fileName = path.basename(imageFile);
+
+    // Check if file already exists
+    const existingId = existingMedia.get(fileName);
+
+    if (existingId) {
+      // Use existing media ID
+      mediaMap.set(`/images/${imageFile}`, existingId);
+      mediaMap.set(imageFile, existingId);
+      skippedCount++;
+      continue;
+    }
+
+    // Upload new image
     const imagePath = path.join(imagesDir, imageFile);
-    const mediaId = await uploadImage(
-      imagePath,
-      imageFile,
-      strapiUrl,
-      apiToken
-    );
+    const mediaId = await uploadImage(imagePath, imageFile, strapiUrl, apiToken);
 
     if (mediaId) {
-      // Store both with and without /images/ prefix for lookup
       mediaMap.set(`/images/${imageFile}`, mediaId);
       mediaMap.set(imageFile, mediaId);
+      uploadedCount++;
       console.log(`   ✓ ${imageFile}`);
     }
   }
-
+  console.log(`   Uploaded: ${uploadedCount}, Skipped (existing): ${skippedCount}`);
   return mediaMap;
 }
 
