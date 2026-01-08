@@ -209,31 +209,6 @@ async function installSchemas(
     const schema = await fs.readJson(schemaPath);
     const singularName =
       schema.info?.singularName || path.basename(file, ".json");
-
-    // console.log(`   Generating ${singularName}...`);
-    //
-    // try {
-    //     execSync(`npx strapi generate api ${singularName}`, {
-    //         cwd: strapiDir,
-    //         stdio: 'pipe',
-    //     });
-    //
-    //     const apiPath = path.join(strapiDir, 'src', 'api', singularName);
-    //     const contentTypesPath = path.join(apiPath, 'content-types', singularName);
-    //     const targetPath = path.join(contentTypesPath, 'schema.json');
-    //
-    //     await fs.writeJson(targetPath, schema, { spaces: 2 });
-    //     console.log(`   ✓ Created ${singularName}`);
-    // } catch (error: any) {
-    //     const errorMessage = error.stderr?.toString() || error.message || 'Unknown error';
-    //     console.error(`   ✗ Failed to generate ${singularName}: ${errorMessage}`);
-    // }
-    // // const apiPath = path.join(strapiDir, 'src', 'api', singularName);
-    // // const contentTypesPath = path.join(apiPath, 'content-types', singularName);
-    // // const targetPath = path.join(contentTypesPath, 'schema.json');
-    // //
-    // // await fs.ensureDir(contentTypesPath);
-    // // await fs.writeJson(targetPath, schema, { spaces: 2 });
     console.log(`   Installing ${singularName}...`);
     try {
       // Create the Strapi API structure manually (strapi generate is interactive)
