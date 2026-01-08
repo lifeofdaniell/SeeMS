@@ -6,7 +6,11 @@
 export { initEditor } from './editor';
 export { createToolbar } from './toolbar';
 export { Highlighter } from './highlighter';
+export { createAuthManager, AuthManager } from './auth';
+export { createLoginModal, showLoginModal } from './login-modal';
 export type { EditorConfig, EditorInstance, EditableElement, ToolbarButton } from './types';
+export type { AuthConfig, AuthCredentials, AuthResponse } from './auth';
+export type { LoginModalConfig } from './login-modal';
 
 /**
  * Auto-initialize if ?preview=true is in URL
