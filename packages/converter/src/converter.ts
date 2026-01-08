@@ -20,7 +20,7 @@ import {
     updateNuxtConfig,
     writeEmbeddedStyles,
 } from './config-updater';
-import { createEditorPlugin, addEditorDependency, createSaveEndpoint } from './editor-integration';
+import { createEditorPlugin, addEditorDependency, createSaveEndpoint, createPublishEndpoint } from './editor-integration';
 import { setupBoilerplate } from './boilerplate';
 import { generateManifest, writeManifest } from './manifest';
 import { manifestToSchemas } from './transformer';
@@ -178,9 +178,11 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
         await createEditorPlugin(outputDir);
         await addEditorDependency(outputDir);
         await createSaveEndpoint(outputDir);
+        await createPublishEndpoint(outputDir);
         console.log(pc.green('  ✓ Editor plugin created'));
         console.log(pc.green('  ✓ Editor dependency added'));
         console.log(pc.green('  ✓ Save endpoint created'));
+        console.log(pc.green('  ✓ Publish endpoint created'));
 
         // Success!
         console.log(pc.green('\n✅ Conversion completed successfully!'));

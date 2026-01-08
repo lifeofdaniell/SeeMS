@@ -15,7 +15,7 @@ export interface EditorConfig {
 
 export interface EditorInstance {
   /** Enable editing mode */
-  enable: () => void;
+  enable: () => Promise<void>;
   /** Disable editing mode */
   disable: () => void;
   /** Check if editing is enabled */
@@ -26,6 +26,14 @@ export interface EditorInstance {
   discard: () => void;
   /** Destroy the editor instance */
   destroy: () => void;
+  /** Switch to a different page */
+  setPage: (pageName: string) => Promise<void>;
+  /** Load draft for a specific page */
+  loadPageDraft: (pageName: string) => Promise<void>;
+  /** Get current page name */
+  getCurrentPage: () => string | null;
+  /** Apply draft data to elements */
+  applyDraft: (fields: Record<string, any>) => void;
 }
 
 export interface ToolbarButton {
