@@ -286,6 +286,11 @@ export class PageNavigator {
    * Format page name for display
    */
   private formatPageName(pageName: string): string {
+    // Handle undefined or empty page name
+    if (!pageName) {
+      return 'Select Page';
+    }
+
     // Convert 'index' to 'Home'
     if (pageName === 'index') {
       return 'Home';

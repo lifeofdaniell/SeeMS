@@ -4,7 +4,7 @@
  */
 
 export { initEditor } from './editor';
-export { createToolbar } from './toolbar';
+export { createToolbar, Toolbar } from './toolbar';
 export { Highlighter } from './highlighter';
 export { createAuthManager, AuthManager } from './auth';
 export { createLoginModal, showLoginModal } from './login-modal';
@@ -16,6 +16,7 @@ export { PageNavigator, createPageNavigator } from './page-navigator';
 export { ChangesIndicator, createChangesIndicator } from './changes-indicator';
 
 export type { EditorConfig, EditorInstance, EditableElement, ToolbarButton } from './types';
+export type { ToolbarConfig } from './toolbar';
 export type { AuthConfig, AuthCredentials, AuthResponse } from './auth';
 export type { LoginModalConfig } from './login-modal';
 export type { DraftData, DraftStorageConfig } from './draft-storage';
@@ -41,17 +42,41 @@ if (typeof window !== 'undefined') {
   }
 }
 
-function initPreviewMode() {
+async function initPreviewMode() {
   const { initEditor } = require('./editor');
   const { createToolbar } = require('./toolbar');
-  
+  const { createDraftStorage } = require('./draft-storage');
+  const { createURLStateManager } = require('./url-state');
+  const { createManifestLoader, getCurrentPageFromRoute } = require('./manifest-loader');
+  const { createNavigationGuard } = require('./navigation-guard');
+
+  // Initialize all dependencies
+  const draftStorage = createDraftStorage();
+  const urlState = createURLStateManager();
+  const manifestLoader = createManifestLoader();
+  const navigationGuard = createNavigationGuard();
+
+  // Load manifest
+  await manifestLoader.load();
+
+  // Get current page from route
+  const currentPage = getCurrentPageFromRoute();
+
   const editor = initEditor({
     apiEndpoint: '/api/cms/save',
     richText: true,
   });
-  
+
   editor.enable();
-  
-  const toolbar = createToolbar(editor);
+
+  // Create toolbar with all dependencies
+  const toolbar = await createToolbar(editor, {
+    draftStorage,
+    urlState,
+    navigationGuard,
+    manifestLoader,
+    currentPage,
+  });
+
   document.body.appendChild(toolbar);
 }

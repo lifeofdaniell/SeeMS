@@ -42,8 +42,17 @@ export async function writeManifest(
   outputDir: string,
   manifest: CMSManifest
 ): Promise<void> {
+  const manifestContent = JSON.stringify(manifest, null, 2);
+
+  // Write to root directory
   const manifestPath = path.join(outputDir, 'cms-manifest.json');
-  await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
+  await fs.writeFile(manifestPath, manifestContent, 'utf-8');
+
+  // Also write to public directory for client-side access
+  const publicDir = path.join(outputDir, 'public');
+  await fs.ensureDir(publicDir);
+  const publicManifestPath = path.join(publicDir, 'cms-manifest.json');
+  await fs.writeFile(publicManifestPath, manifestContent, 'utf-8');
 }
 
 /**
