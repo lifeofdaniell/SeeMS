@@ -8,8 +8,13 @@
 import { Command } from "commander";
 import pc from "picocolors";
 import * as readline from "readline";
+import fs from "fs-extra";
+import path from "path";
 import { convertWebflowExport } from "./converter";
 import { completeSetup } from "./strapi-setup";
+import { manifestToSchemas } from "./transformer";
+import { writeAllSchemas, createStrapiReadme } from "./schema-writer";
+import type { CMSManifest } from "@see-ms/types";
 
 const program = new Command();
 
@@ -148,12 +153,55 @@ program
   .argument("<manifest>", "Path to cms-manifest.json")
   .option("-t, --type <cms>", "CMS type (strapi|contentful|sanity)", "strapi")
   .option("-o, --output <dir>", "Output directory for schemas")
-  .action(async (manifest, _options) => {
-    console.log(pc.cyan("🗂️  SeeMS Schema Generator"));
-    console.log(pc.dim(`Generating schemas from: ${manifest}`));
+  .action(async (manifestPath, options) => {
+    try {
+      console.log(pc.cyan("🗂️  SeeMS Schema Generator"));
+      console.log(pc.dim(`Reading manifest from: ${manifestPath}`));
 
-    // TODO: Implementation in Sprint 3
-    console.log(pc.yellow("⚠️  Schema generation logic to be implemented"));
+      // Read the manifest file
+      const manifestExists = await fs.pathExists(manifestPath);
+      if (!manifestExists) {
+        throw new Error(`Manifest file not found: ${manifestPath}`);
+      }
+
+      const manifestContent = await fs.readFile(manifestPath, "utf-8");
+      const manifest: CMSManifest = JSON.parse(manifestContent);
+
+      console.log(pc.green(`  ✓ Manifest loaded successfully`));
+
+      // Determine output directory
+      const outputDir = options.output || path.dirname(manifestPath);
+
+      // Only support Strapi for now
+      if (options.type !== "strapi") {
+        console.log(
+          pc.yellow(
+            `⚠️  Only Strapi is currently supported. Using Strapi schema format.`
+          )
+        );
+      }
+
+      // Generate schemas
+      console.log(pc.blue("\n📋 Generating Strapi schemas..."));
+      const schemas = manifestToSchemas(manifest);
+      await writeAllSchemas(outputDir, schemas);
+      await createStrapiReadme(outputDir);
+
+      console.log(
+        pc.green(
+          `  ✓ Generated ${Object.keys(schemas).length} Strapi content types`
+        )
+      );
+      console.log(pc.dim(`  ✓ Schemas written to: ${path.join(outputDir, "cms-schemas")}/`));
+
+      console.log(pc.green("\n✅ Schema generation completed successfully!"));
+    } catch (error) {
+      console.error(pc.red("\n❌ Schema generation failed:"));
+      console.error(
+        pc.red(error instanceof Error ? error.message : String(error))
+      );
+      process.exit(1);
+    }
   });
 
 program.parse();
