@@ -129,3 +129,51 @@ export async function writeEmbeddedStyles(
     await fs.writeFile(mainCssPath, `/* Webflow Embedded Styles */\n${styles}`, 'utf-8');
   }
 }
+
+/**
+ * Add strapiUrl to nuxt.config.ts runtimeConfig
+ * Uses the existing STRAPI_URL env variable from strapi setup
+ */
+export async function addStrapiUrlToConfig(
+  outputDir: string,
+  strapiUrl: string = 'http://localhost:1337'
+): Promise<void> {
+  const configPath = path.join(outputDir, 'nuxt.config.ts');
+
+  // Check if config exists
+  const configExists = await fs.pathExists(configPath);
+  if (!configExists) {
+    throw new Error('nuxt.config.ts not found in output directory');
+  }
+
+  // Read existing config
+  let config = await fs.readFile(configPath, 'utf-8');
+
+  // Check if runtimeConfig already exists
+  if (config.includes('runtimeConfig:')) {
+    // Check if public key exists
+    if (config.includes('public:')) {
+      // Add strapiUrl to public section
+      // Find the public: { and add strapiUrl after it
+      config = config.replace(
+        /public:\s*\{/,
+        `public: {\n      strapiUrl: process.env.STRAPI_URL || '${strapiUrl}',`
+      );
+    } else {
+      // Add public section with strapiUrl
+      config = config.replace(
+        /runtimeConfig:\s*\{/,
+        `runtimeConfig: {\n    public: {\n      strapiUrl: process.env.STRAPI_URL || '${strapiUrl}'\n    },`
+      );
+    }
+  } else {
+    // Add entire runtimeConfig section
+    config = config.replace(
+      /export default defineNuxtConfig\(\{/,
+      `export default defineNuxtConfig({\n  runtimeConfig: {\n    public: {\n      strapiUrl: process.env.STRAPI_URL || '${strapiUrl}'\n    }\n  },`
+    );
+  }
+
+  // Write updated config
+  await fs.writeFile(configPath, config, 'utf-8');
+}
