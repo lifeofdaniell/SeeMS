@@ -106,8 +106,8 @@ export default defineNuxtPlugin(async (nuxtApp) => {
     return;
   }
 
-  // Update URL state with current page
-  urlState.setState({ preview: true, page: currentPage });
+  // URL state only manages preview mode (page is derived from route)
+  urlState.setState({ preview: true });
 
   // Auth flow
   let token = authManager.getToken();
@@ -162,7 +162,6 @@ export default defineNuxtPlugin(async (nuxtApp) => {
     const newPage = manifestLoader.getPageFromRoute(to.path);
     if (newPage && newPage !== currentPage) {
       currentPage = newPage;
-      urlState.setState({ page: newPage });
       await editor.setPage(newPage);
 
       // Update toolbar if it has an update method
