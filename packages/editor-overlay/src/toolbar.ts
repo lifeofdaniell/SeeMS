@@ -235,12 +235,9 @@ export class Toolbar {
   /**
    * Handle page change from navigator
    */
-  private async handlePageChange(pageName: string, route: string): Promise<void> {
-    // Update URL state
-    this.config.urlState.setState({ page: pageName });
-
-    // Navigate to the page
-    window.location.href = `${route}?preview=true&page=${pageName}`;
+  private async handlePageChange(_pageName: string, route: string): Promise<void> {
+    // Navigate to the page with only preview=true (page is derived from route)
+    window.location.href = `${route}?preview=true`;
   }
 
   /**

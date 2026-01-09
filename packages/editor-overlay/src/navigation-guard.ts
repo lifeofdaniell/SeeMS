@@ -12,19 +12,14 @@ export interface NavigationGuardConfig {
 export class NavigationGuard {
   private enabled: boolean = false;
   private clickHandler: ((e: Event) => void) | null = null;
-  private styleElement: HTMLStyleElement | null = null;
-  private config: NavigationGuardConfig;
 
-  constructor(config: NavigationGuardConfig = {}) {
-    this.config = {
-      showToast: config.showToast !== false,
-      toastMessage: config.toastMessage || 'Navigation disabled in edit mode',
-      toastDuration: config.toastDuration || 3000,
-    };
+  constructor(_config: NavigationGuardConfig = {}) {
+    // Config is preserved for backwards compatibility but not used
   }
 
   /**
    * Enable navigation guard
+   * Persists ?preview=true in internal links, allows external links
    */
   public enable(): void {
     if (this.enabled) return;
@@ -36,24 +31,36 @@ export class NavigationGuard {
       const target = e.target as HTMLElement;
 
       // Check if click is on a link or inside a link
-      const link = target.closest('a, [href]');
+      const linkElement = target.closest('a, [href]') as HTMLAnchorElement;
 
-      if (link) {
+      if (linkElement) {
+        const href = linkElement.getAttribute('href');
+        if (!href) return;
+
+        // Check if it's an external link (different origin)
+        const isExternal = this.isExternalLink(href);
+
+        if (isExternal) {
+          // Allow external links to work normally
+          return;
+        }
+
+        // For internal links, add ?preview=true if not already present
         e.preventDefault();
         e.stopPropagation();
-        e.stopImmediatePropagation();
 
-        if (this.config.showToast) {
-          this.showToast(this.config.toastMessage!);
-        }
+        const url = new URL(href, window.location.origin);
+
+        // Add or update preview parameter
+        url.searchParams.set('preview', 'true');
+
+        // Navigate to the modified URL
+        window.location.href = url.toString();
       }
     };
 
     // Add listener in capture phase to intercept before any other handlers
     document.addEventListener('click', this.clickHandler, true);
-
-    // Add CSS for visual feedback
-    this.addStyles();
   }
 
   /**
@@ -69,9 +76,30 @@ export class NavigationGuard {
       document.removeEventListener('click', this.clickHandler, true);
       this.clickHandler = null;
     }
+  }
 
-    // Remove styles
-    this.removeStyles();
+  /**
+   * Check if a URL is external (different origin)
+   */
+  private isExternalLink(href: string): boolean {
+    try {
+      // Handle relative URLs
+      if (href.startsWith('/') || href.startsWith('#') || href.startsWith('?')) {
+        return false;
+      }
+
+      // Handle absolute URLs
+      if (href.startsWith('http://') || href.startsWith('https://')) {
+        const linkUrl = new URL(href);
+        return linkUrl.origin !== window.location.origin;
+      }
+
+      // Relative paths are internal
+      return false;
+    } catch {
+      // If URL parsing fails, treat as internal for safety
+      return false;
+    }
   }
 
   /**
@@ -100,89 +128,6 @@ export class NavigationGuard {
     }
   }
 
-  /**
-   * Add CSS styles for visual feedback
-   */
-  private addStyles(): void {
-    if (this.styleElement) return;
-
-    this.styleElement = document.createElement('style');
-    this.styleElement.id = 'cms-navigation-guard-styles';
-    this.styleElement.textContent = `
-      /* Visual feedback for disabled links in edit mode */
-      a, [href] {
-        cursor: not-allowed !important;
-        opacity: 0.7;
-      }
-
-      a:hover, [href]:hover {
-        opacity: 0.5;
-      }
-    `;
-
-    document.head.appendChild(this.styleElement);
-  }
-
-  /**
-   * Remove CSS styles
-   */
-  private removeStyles(): void {
-    if (this.styleElement && this.styleElement.parentNode) {
-      this.styleElement.parentNode.removeChild(this.styleElement);
-      this.styleElement = null;
-    }
-  }
-
-  /**
-   * Show toast notification
-   */
-  private showToast(message: string): void {
-    // Check if there's already a toast
-    const existingToast = document.querySelector('.cms-navigation-toast');
-    if (existingToast) {
-      existingToast.remove();
-    }
-
-    // Create toast element
-    const toast = document.createElement('div');
-    toast.className = 'cms-navigation-toast';
-    toast.textContent = message;
-
-    // Apply styles
-    Object.assign(toast.style, {
-      position: 'fixed',
-      top: '80px',
-      left: '50%',
-      transform: 'translateX(-50%)',
-      backgroundColor: 'rgba(0, 0, 0, 0.8)',
-      color: 'white',
-      padding: '12px 24px',
-      borderRadius: '8px',
-      fontSize: '14px',
-      fontFamily: 'system-ui, -apple-system, sans-serif',
-      zIndex: '10000',
-      pointerEvents: 'none',
-      opacity: '0',
-      transition: 'opacity 0.2s ease-in-out',
-    });
-
-    document.body.appendChild(toast);
-
-    // Fade in
-    requestAnimationFrame(() => {
-      toast.style.opacity = '1';
-    });
-
-    // Fade out and remove
-    setTimeout(() => {
-      toast.style.opacity = '0';
-      setTimeout(() => {
-        if (toast.parentNode) {
-          toast.parentNode.removeChild(toast);
-        }
-      }, 200);
-    }, this.config.toastDuration!);
-  }
 
   /**
    * Destroy the navigation guard

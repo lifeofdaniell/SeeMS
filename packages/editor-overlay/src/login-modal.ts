@@ -2,7 +2,7 @@
  * Login modal for CMS authentication
  */
 
-import type { AuthManager } from './auth';
+import type { AuthManager } from "./auth";
 
 export interface LoginModalConfig {
   authManager: AuthManager;
@@ -11,13 +11,14 @@ export interface LoginModalConfig {
 }
 
 /**
- * Create and show a login modal
+ * Create and show a login toolbar (fixed bottom)
  */
 export function createLoginModal(config: LoginModalConfig): HTMLElement {
-  const { authManager, onSuccess, onCancel } = config;
+  const { authManager, onSuccess } = config;
 
-  // Create modal overlay
-  const overlay = document.createElement('div');
+  // Create dark overlay
+  const overlay = document.createElement("div");
+  overlay.id = "cms-login-overlay";
   overlay.style.cssText = `
     position: fixed;
     top: 0;
@@ -25,240 +26,222 @@ export function createLoginModal(config: LoginModalConfig): HTMLElement {
     right: 0;
     bottom: 0;
     background: rgba(0, 0, 0, 0.7);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 999999;
+    z-index: 10000;
     backdrop-filter: blur(4px);
   `;
 
-  // Create modal content
-  const modal = document.createElement('div');
-  modal.style.cssText = `
+  // Create toolbar container (fixed bottom)
+  const toolbar = document.createElement("div");
+  toolbar.id = "cms-login-toolbar";
+  toolbar.style.cssText = `
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 64px;
     background: white;
-    border-radius: 12px;
-    padding: 32px;
-    width: 90%;
-    max-width: 400px;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    border-top: 1px solid #e5e7eb;
+    box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.1);
+    z-index: 10001;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
   `;
 
-  // Create form
-  const form = document.createElement('form');
+  // Create form with horizontal layout
+  const form = document.createElement("form");
+  form.style.cssText = `
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 0 20px;
+    flex: 1;
+  `;
+
   form.innerHTML = `
     <style>
-      .cms-login-title {
-        margin: 0 0 8px 0;
-        font-size: 24px;
-        font-weight: 600;
-        color: #1a1a1a;
-      }
-      .cms-login-subtitle {
-        margin: 0 0 24px 0;
-        font-size: 14px;
-        color: #666;
-      }
-      .cms-login-field {
-        margin-bottom: 16px;
-      }
-      .cms-login-label {
-        display: block;
-        margin-bottom: 6px;
+      .cms-login-label-text {
         font-size: 14px;
         font-weight: 500;
-        color: #333;
+        color: #374151;
+        white-space: nowrap;
+        margin-right: 8px;
       }
       .cms-login-input {
-        width: 100%;
-        padding: 10px 12px;
-        border: 1px solid #ddd;
+        padding: 8px 12px;
+        border: 1px solid #d1d5db;
         border-radius: 6px;
         font-size: 14px;
-        box-sizing: border-box;
         transition: border-color 0.2s;
+        min-width: 200px;
+        flex: 1;
       }
       .cms-login-input:focus {
         outline: none;
-        border-color: #4f46e5;
-      }
-      .cms-login-error {
-        margin-top: 12px;
-        padding: 10px;
-        background: #fee;
-        border: 1px solid #fcc;
-        border-radius: 6px;
-        color: #c33;
-        font-size: 13px;
-        display: none;
-      }
-      .cms-login-error.show {
-        display: block;
-      }
-      .cms-login-buttons {
-        display: flex;
-        gap: 12px;
-        margin-top: 24px;
+        border-color: #3b82f6;
       }
       .cms-login-button {
-        flex: 1;
-        padding: 10px 16px;
+        padding: 8px 24px;
         border: none;
         border-radius: 6px;
         font-size: 14px;
-        font-weight: 500;
+        font-weight: 600;
         cursor: pointer;
         transition: all 0.2s;
+        white-space: nowrap;
       }
       .cms-login-button-primary {
-        background: #4f46e5;
+        background: #3b82f6;
         color: white;
       }
       .cms-login-button-primary:hover {
-        background: #4338ca;
+        background: #2563eb;
       }
       .cms-login-button-primary:disabled {
-        background: #a5b4fc;
+        background: #93c5fd;
         cursor: not-allowed;
       }
-      .cms-login-button-secondary {
-        background: #f3f4f6;
-        color: #374151;
+      .cms-login-error-inline {
+        position: fixed;
+        bottom: 80px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: #ef4444;
+        color: white;
+        padding: 12px 24px;
+        border-radius: 8px;
+        font-size: 14px;
+        font-weight: 500;
+        z-index: 10000;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        opacity: 0;
+        transition: opacity 0.2s ease-in-out;
+        pointer-events: none;
       }
-      .cms-login-button-secondary:hover {
-        background: #e5e7eb;
+      .cms-login-error-inline.show {
+        opacity: 1;
+      }
+      @media (max-width: 768px) {
+        #cms-login-toolbar {
+          height: auto;
+          min-height: 64px;
+          padding: 12px 0;
+        }
+        #cms-login-toolbar form {
+          flex-wrap: wrap;
+          justify-content: center;
+        }
+        .cms-login-input {
+          min-width: 150px;
+          flex: 1;
+        }
       }
     </style>
 
-    <h2 class="cms-login-title">CMS Editor Login</h2>
-    <p class="cms-login-subtitle">Sign in with your Strapi credentials</p>
-
-    <div class="cms-login-field">
-      <label class="cms-login-label" for="cms-login-identifier">Email or Username</label>
-      <input
-        type="text"
-        id="cms-login-identifier"
-        class="cms-login-input"
-        placeholder="Enter your email or username"
-        required
-        autocomplete="username"
-      />
-    </div>
-
-    <div class="cms-login-field">
-      <label class="cms-login-label" for="cms-login-password">Password</label>
-      <input
-        type="password"
-        id="cms-login-password"
-        class="cms-login-input"
-        placeholder="Enter your password"
-        required
-        autocomplete="current-password"
-      />
-    </div>
-
-    <div class="cms-login-error" id="cms-login-error"></div>
-
-    <div class="cms-login-buttons">
-      <button type="button" class="cms-login-button cms-login-button-secondary" id="cms-login-cancel">
-        Cancel
-      </button>
-      <button type="submit" class="cms-login-button cms-login-button-primary" id="cms-login-submit">
-        Sign In
-      </button>
-    </div>
+    <span class="cms-login-label-text">🔒 CMS Editor Login:</span>
+    <input
+      type="text"
+      id="cms-login-identifier"
+      class="cms-login-input"
+      placeholder="Email or username"
+      required
+      autocomplete="username"
+    />
+    <input
+      type="password"
+      id="cms-login-password"
+      class="cms-login-input"
+      placeholder="Password"
+      required
+      autocomplete="current-password"
+    />
+    <div style="flex: 1;"></div>
+    <button type="submit" class="cms-login-button cms-login-button-primary" id="cms-login-submit">
+      Sign In
+    </button>
+    <div class="cms-login-error-inline" id="cms-login-error"></div>
   `;
 
   // Get form elements
-  const identifierInput = form.querySelector('#cms-login-identifier') as HTMLInputElement;
-  const passwordInput = form.querySelector('#cms-login-password') as HTMLInputElement;
-  const submitButton = form.querySelector('#cms-login-submit') as HTMLButtonElement;
-  const cancelButton = form.querySelector('#cms-login-cancel') as HTMLButtonElement;
-  const errorDiv = form.querySelector('#cms-login-error') as HTMLDivElement;
+  const identifierInput = form.querySelector("#cms-login-identifier") as HTMLInputElement;
+  const passwordInput = form.querySelector("#cms-login-password") as HTMLInputElement;
+  const submitButton = form.querySelector("#cms-login-submit") as HTMLButtonElement;
+  const errorDiv = form.querySelector("#cms-login-error") as HTMLDivElement;
 
   // Handle form submission
-  form.addEventListener('submit', async (e) => {
+  form.addEventListener("submit", async (e) => {
     e.preventDefault();
 
     const identifier = identifierInput.value.trim();
     const password = passwordInput.value;
 
     if (!identifier || !password) {
-      showError('Please enter both email/username and password');
+      showError("Please enter both email/username and password");
       return;
     }
 
     // Disable form
     submitButton.disabled = true;
-    submitButton.textContent = 'Signing in...';
-    errorDiv.classList.remove('show');
+    submitButton.textContent = "Signing in...";
+    errorDiv.classList.remove("show");
 
     try {
       const response = await authManager.login({ identifier, password });
 
-      // Success!
+      // Success! Remove overlay and toolbar
+      overlay.remove();
+      toolbar.remove();
+
+      // Call success handler
       onSuccess(response.jwt);
-
-      // Close modal
-      overlay.remove();
     } catch (error) {
-      showError(error instanceof Error ? error.message : 'Login failed. Please try again.');
+      showError(error instanceof Error ? error.message : "Login failed. Please try again.");
       submitButton.disabled = false;
-      submitButton.textContent = 'Sign In';
-    }
-  });
-
-  // Handle cancel
-  cancelButton.addEventListener('click', () => {
-    overlay.remove();
-    onCancel?.();
-  });
-
-  // Handle ESC key
-  const handleEscape = (e: KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      overlay.remove();
-      onCancel?.();
-      document.removeEventListener('keydown', handleEscape);
-    }
-  };
-  document.addEventListener('keydown', handleEscape);
-
-  // Close on overlay click
-  overlay.addEventListener('click', (e) => {
-    if (e.target === overlay) {
-      overlay.remove();
-      onCancel?.();
+      submitButton.textContent = "Sign In";
     }
   });
 
   function showError(message: string) {
     errorDiv.textContent = message;
-    errorDiv.classList.add('show');
+    errorDiv.classList.add("show");
+
+    // Auto-hide after 3 seconds
+    setTimeout(() => {
+      errorDiv.classList.remove("show");
+    }, 3000);
   }
 
-  // Assemble and return
-  modal.appendChild(form);
-  overlay.appendChild(modal);
+  // Assemble: Add form to toolbar, add both overlay and toolbar to body
+  toolbar.appendChild(form);
 
-  return overlay;
+  // Return a container that holds both
+  const container = document.createElement("div");
+  container.appendChild(overlay);
+  container.appendChild(toolbar);
+
+  return container;
 }
 
 /**
- * Show login modal and return a promise
+ * Show login toolbar and return a promise
  */
 export function showLoginModal(authManager: AuthManager): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const modal = createLoginModal({
+  return new Promise((resolve) => {
+    const container = createLoginModal({
       authManager,
       onSuccess: resolve,
-      onCancel: () => reject(new Error('Login cancelled')),
+      onCancel: undefined // No cancel option - must login to proceed
     });
 
-    document.body.appendChild(modal);
+    document.body.appendChild(container);
 
     // Focus the identifier input
     setTimeout(() => {
-      const input = modal.querySelector('#cms-login-identifier') as HTMLInputElement;
+      const input = container.querySelector("#cms-login-identifier") as HTMLInputElement;
       input?.focus();
     }, 100);
   });

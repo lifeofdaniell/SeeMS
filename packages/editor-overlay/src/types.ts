@@ -11,6 +11,12 @@ export interface EditorConfig {
   richText?: boolean;
   /** Custom toolbar buttons */
   customButtons?: ToolbarButton[];
+  /** Draft storage manager */
+  draftStorage?: any;
+  /** Current page name */
+  currentPage?: string;
+  /** Manifest loader */
+  manifestLoader?: any;
 }
 
 export interface EditorInstance {

@@ -56,12 +56,7 @@ export class URLStateManager {
       params.delete('preview');
     }
 
-    // Update page parameter
-    if (newState.page) {
-      params.set('page', newState.page);
-    } else {
-      params.delete('page');
-    }
+    // Note: page parameter is no longer managed - page is derived from route
 
     // Update URL without navigation
     url.search = params.toString();
@@ -72,7 +67,7 @@ export class URLStateManager {
   }
 
   /**
-   * Clear preview mode (remove ?preview=true and ?page=...)
+   * Clear preview mode (remove ?preview=true)
    */
   public clearPreviewMode(): void {
     if (typeof window === 'undefined') return;
@@ -81,7 +76,6 @@ export class URLStateManager {
     const params = new URLSearchParams(url.search);
 
     params.delete('preview');
-    params.delete('page');
 
     url.search = params.toString();
     window.history.replaceState({}, '', url.toString());
