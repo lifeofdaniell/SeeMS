@@ -30,10 +30,21 @@ export class NavigationGuard {
     this.clickHandler = (e: Event) => {
       const target = e.target as HTMLElement;
 
+      // Check if the target itself is editable (has data-editable or is marked as editable)
+      // Let editable elements handle their own clicks
+      if (this.isEditableElement(target)) {
+        return; // Let the editor handle this click
+      }
+
       // Check if click is on a link or inside a link
       const linkElement = target.closest('a, [href]') as HTMLAnchorElement;
 
       if (linkElement) {
+        // Double-check: if the link itself is editable, allow it
+        if (this.isEditableElement(linkElement)) {
+          return;
+        }
+
         const href = linkElement.getAttribute('href');
         if (!href) return;
 
@@ -76,6 +87,32 @@ export class NavigationGuard {
       document.removeEventListener('click', this.clickHandler, true);
       this.clickHandler = null;
     }
+  }
+
+  /**
+   * Check if an element is editable (used by CMS editor)
+   */
+  private isEditableElement(element: HTMLElement): boolean {
+    // Check if element is marked as CMS editable
+    if (element.hasAttribute('data-cms-editable')) {
+      return true;
+    }
+
+    // Check if element is currently being edited (contenteditable)
+    if (element.getAttribute('contenteditable') === 'true') {
+      return true;
+    }
+
+    // Check if any parent element (up to 3 levels) is editable
+    let parent = element.parentElement;
+    for (let i = 0; i < 3 && parent; i++) {
+      if (parent.hasAttribute('data-cms-editable')) {
+        return true;
+      }
+      parent = parent.parentElement;
+    }
+
+    return false;
   }
 
   /**

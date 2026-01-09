@@ -43,6 +43,10 @@ export function initEditor(config: EnhancedEditorConfig): EditorInstance {
           const fieldType = element.tagName === "IMG" ? "image" :
             field.type === "rich" ? "rich" : "plain";
 
+          // Mark element as editable for navigation guard
+          element.setAttribute('data-cms-editable', 'true');
+          element.setAttribute('data-cms-field', fieldName);
+
           editableElements.set(element, {
             element,
             selector: field.selector,
@@ -99,20 +103,20 @@ export function initEditor(config: EnhancedEditorConfig): EditorInstance {
    * Handle hover events
    */
   function handleMouseEnter(e: MouseEvent): void {
-    const target = e.target as HTMLElement;
+    const element = e.currentTarget as HTMLElement;
 
-    if (editableElements.has(target)) {
-      highlighter.highlight(target);
-      target.style.cursor = "pointer";
+    if (editableElements.has(element)) {
+      highlighter.highlight(element);
+      element.style.cursor = "pointer";
     }
   }
 
   function handleMouseLeave(e: MouseEvent): void {
-    const target = e.target as HTMLElement;
+    const element = e.currentTarget as HTMLElement;
 
-    if (editableElements.has(target) && target !== activeEditor) {
+    if (editableElements.has(element) && element !== activeEditor) {
       highlighter.unhighlight();
-      target.style.cursor = "";
+      element.style.cursor = "";
     }
   }
 
@@ -120,19 +124,20 @@ export function initEditor(config: EnhancedEditorConfig): EditorInstance {
    * Handle click to edit
    */
   function handleClick(e: MouseEvent): void {
-    const target = e.target as HTMLElement;
+    const element = e.currentTarget as HTMLElement;
 
-    if (!editableElements.has(target)) return;
+    if (!editableElements.has(element)) return;
 
     e.preventDefault();
     e.stopPropagation();
 
-    const elementData = editableElements.get(target)!;
+    const elementData = editableElements.get(element)!;
 
-    if (elementData.fieldType === "text") {
-      startTextEdit(target, elementData);
-    } else if (elementData.fieldType === "image") {
-      startImageEdit(target, elementData);
+    if (elementData.fieldType === "image") {
+      startImageEdit(element, elementData);
+    } else {
+      // Handle text, plain, and rich field types
+      startTextEdit(element, elementData);
     }
   }
 

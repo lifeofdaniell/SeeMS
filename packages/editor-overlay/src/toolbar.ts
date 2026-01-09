@@ -260,6 +260,9 @@ export class Toolbar {
 
     // Destroy components
     this.destroy();
+
+    // Reload page to restore Lenis and normal behavior
+    window.location.reload();
   }
 
   /**

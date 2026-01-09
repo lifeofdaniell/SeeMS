@@ -17,6 +17,40 @@ export async function createEditorPlugin(outputDir: string): Promise<void> {
  * Loads the inline editor when ?preview=true with full state management
  */
 
+/**
+ * Disable Lenis smooth scroll to allow native scrolling in edit mode
+ */
+function disableLenisInEditMode() {
+  try {
+    // Check for Lenis in common locations
+    const lenisInstances = [
+      (window as any).lenis,
+      (window as any).__lenis,
+      document.querySelector('.lenis'),
+    ];
+
+    for (const lenis of lenisInstances) {
+      if (lenis && typeof lenis.destroy === 'function') {
+        lenis.destroy();
+        return;
+      }
+    }
+
+    // Check for Vue Lenis component instances
+    const lenisElements = document.querySelectorAll('[data-lenis], .lenis');
+    if (lenisElements.length > 0) {
+      // Try to find and destroy via data attributes or component instances
+      lenisElements.forEach((el: any) => {
+        if (el.__lenis && typeof el.__lenis.destroy === 'function') {
+          el.__lenis.destroy();
+        }
+      });
+    }
+  } catch (error) {
+    // Silently fail - Lenis may not be present
+  }
+}
+
 export default defineNuxtPlugin(async (nuxtApp) => {
   // Only run on client side
   if (process.server) return;
@@ -87,6 +121,9 @@ export default defineNuxtPlugin(async (nuxtApp) => {
       return;
     }
   }
+
+  // Disable Lenis smooth scroll in edit mode (allows native scrolling)
+  disableLenisInEditMode();
 
   // Initialize navigation guard
   const navigationGuard = createNavigationGuard({

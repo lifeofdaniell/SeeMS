@@ -33,56 +33,140 @@ export class AuthManager {
 
   constructor(config: AuthConfig) {
     this.config = config;
-    this.storageKey = config.storageKey || 'cms_editor_token';
+    this.storageKey = config.storageKey || "cms_editor_token";
   }
 
   /**
-   * Authenticate with Strapi
+   * Authenticate with Strapi (tries admin auth first, then regular user auth)
    */
   async login(credentials: AuthCredentials): Promise<AuthResponse> {
+    // Try admin authentication first
     try {
-      const response = await fetch(`${this.config.strapiUrl}/api/auth/local`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(credentials),
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error?.message || 'Authentication failed');
+      const adminResult = await this.tryAdminLogin(credentials);
+      if (adminResult) {
+        console.log("[Auth] Logged in!");
+        return adminResult;
       }
-
-      const data: AuthResponse = await response.json();
-
-      // Store the JWT token
-      this.setToken(data.jwt);
-
-      return data;
     } catch (error) {
-      console.error('Login failed:', error);
+      console.log("Invalid Credentials");
+    }
+
+    // Fallback to regular user authentication
+    try {
+      const userResult = await this.tryUserLogin(credentials);
+      console.log("[Auth] Logged in!");
+      return userResult;
+    } catch (error) {
+      console.log("Invalid Credentials");
       throw error;
     }
   }
 
   /**
-   * Verify the current token with Strapi
+   * Try admin authentication
+   */
+  private async tryAdminLogin(credentials: AuthCredentials): Promise<AuthResponse | null> {
+    try {
+      const response = await fetch(`${this.config.strapiUrl}/admin/login`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          email: credentials.identifier,
+          password: credentials.password
+        })
+      });
+
+      if (!response.ok) {
+        return null;
+      }
+
+      const data = await response.json();
+
+      // Admin response format: { data: { token, user } }
+      if (data.data?.token) {
+        const authResponse: AuthResponse = {
+          jwt: data.data.token,
+          user: {
+            id: data.data.user.id,
+            username: data.data.user.username || data.data.user.firstname,
+            email: data.data.user.email
+          }
+        };
+
+        // Store the JWT token
+        this.setToken(authResponse.jwt);
+
+        return authResponse;
+      }
+
+      return null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /**
+   * Try regular user authentication
+   */
+  private async tryUserLogin(credentials: AuthCredentials): Promise<AuthResponse> {
+    const response = await fetch(`${this.config.strapiUrl}/api/auth/local`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(credentials)
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      // Handle both Strapi v4 and v5 error formats
+      const errorMessage = errorData.error?.message || errorData.message || "Authentication failed";
+      throw new Error(errorMessage);
+    }
+
+    const data: AuthResponse = await response.json();
+
+    // Store the JWT token
+    this.setToken(data.jwt);
+
+    return data;
+  }
+
+  /**
+   * Verify the current token with Strapi (tries both admin and user endpoints)
    */
   async verifyToken(token?: string): Promise<boolean> {
     const jwt = token || this.getToken();
     if (!jwt) return false;
 
+    // Try admin token verification first
     try {
-      const response = await fetch(`${this.config.strapiUrl}/api/users/me`, {
+      const adminResponse = await fetch(`${this.config.strapiUrl}/admin/users/me`, {
         headers: {
-          'Authorization': `Bearer ${jwt}`,
-        },
+          "Authorization": `Bearer ${jwt}`
+        }
       });
 
-      return response.ok;
+      if (adminResponse.ok) {
+        return true;
+      }
     } catch (error) {
-      console.error('Token verification failed:', error);
+      // Continue to try regular user verification
+    }
+
+    // Try regular user token verification
+    try {
+      const userResponse = await fetch(`${this.config.strapiUrl}/api/users/me`, {
+        headers: {
+          "Authorization": `Bearer ${jwt}`
+        }
+      });
+
+      return userResponse.ok;
+    } catch (error) {
+      console.error("Token verification failed:", error);
       return false;
     }
   }
@@ -91,7 +175,7 @@ export class AuthManager {
    * Store JWT token
    */
   setToken(token: string): void {
-    if (typeof window !== 'undefined') {
+    if (typeof window !== "undefined") {
       localStorage.setItem(this.storageKey, token);
     }
   }
@@ -100,7 +184,7 @@ export class AuthManager {
    * Retrieve JWT token
    */
   getToken(): string | null {
-    if (typeof window !== 'undefined') {
+    if (typeof window !== "undefined") {
       return localStorage.getItem(this.storageKey);
     }
     return null;
@@ -110,7 +194,7 @@ export class AuthManager {
    * Clear stored token
    */
   logout(): void {
-    if (typeof window !== 'undefined') {
+    if (typeof window !== "undefined") {
       localStorage.removeItem(this.storageKey);
     }
   }
