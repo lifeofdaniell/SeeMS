@@ -237,13 +237,28 @@ export default defineEventHandler(async (event) => {
 
   const token = authHeader.substring(7); // Remove 'Bearer ' prefix
 
-  // Verify token with Strapi
+  // Verify token with Strapi and determine if it's an admin or user token
+  let userResponse: any;
+  let isAdminToken = false;
+
   try {
-    const userResponse = await $fetch(\`\${strapiUrl}/api/users/me\`, {
-      headers: {
-        Authorization: \`Bearer \${token}\`,
-      },
-    });
+    // Try admin token verification first
+    try {
+      userResponse = await $fetch(\`\${strapiUrl}/admin/users/me\`, {
+        headers: {
+          Authorization: \`Bearer \${token}\`,
+        },
+      });
+      isAdminToken = true;
+    } catch (adminError) {
+      // Fallback to regular user token verification
+      userResponse = await $fetch(\`\${strapiUrl}/api/users/me\`, {
+        headers: {
+          Authorization: \`Bearer \${token}\`,
+        },
+      });
+      isAdminToken = false;
+    }
 
     // Get the request body
     const body = await readBody(event);
@@ -297,22 +312,61 @@ export default defineEventHandler(async (event) => {
       }
     }
 
-    // Update Strapi content
-    // Use PUT for single types (pages are typically single types)
-    const strapiEndpoint = \`\${strapiUrl}/api/\${page}\`;
+    // Update Strapi v5 content - use different endpoints for admin vs user tokens
+    if (isAdminToken) {
+      // Admin tokens use the content-manager API (Strapi v5)
+      const contentEndpoint = \`\${strapiUrl}/content-manager/single-types/api::\${page}.\${page}\`;
 
-    const result = await $fetch(strapiEndpoint, {
-      method: 'PUT',
-      headers: {
-        'Authorization': \`Bearer \${token}\`,
-        'Content-Type': 'application/json',
-      },
-      body: {
-        data: strapiData,
-        // Set publishedAt to null for drafts, or current time for published
-        publishedAt: isDraft ? null : new Date().toISOString(),
-      },
-    });
+      // Step 1: Update the content
+      await $fetch(contentEndpoint, {
+        method: 'PUT',
+        headers: {
+          'Authorization': \`Bearer \${token}\`,
+          'Content-Type': 'application/json',
+        },
+        body: strapiData,
+      });
+
+      // Step 2: Publish if not a draft (Strapi v5)
+      if (!isDraft) {
+        const publishEndpoint = \`\${strapiUrl}/content-manager/single-types/api::\${page}.\${page}/actions/publish\`;
+        await $fetch(publishEndpoint, {
+          method: 'POST',
+          headers: {
+            'Authorization': \`Bearer \${token}\`,
+            'Content-Type': 'application/json',
+          },
+          body: {},
+        });
+      }
+    } else {
+      // User tokens use the regular REST API
+      const strapiEndpoint = \`\${strapiUrl}/api/\${page}\`;
+
+      await $fetch(strapiEndpoint, {
+        method: 'PUT',
+        headers: {
+          'Authorization': \`Bearer \${token}\`,
+          'Content-Type': 'application/json',
+        },
+        body: {
+          data: strapiData,
+        },
+      });
+
+      // Publish if not a draft (Strapi v5)
+      if (!isDraft) {
+        const publishEndpoint = \`\${strapiUrl}/api/\${page}/publish\`;
+        await $fetch(publishEndpoint, {
+          method: 'POST',
+          headers: {
+            'Authorization': \`Bearer \${token}\`,
+            'Content-Type': 'application/json',
+          },
+          body: {},
+        });
+      }
+    }
 
     console.log(\`[CMS Save] Updated "\${page}" in Strapi (draft: \${isDraft})\`);
 
@@ -323,7 +377,7 @@ export default defineEventHandler(async (event) => {
       isDraft,
       user: {
         id: userResponse.id,
-        username: userResponse.username,
+        username: userResponse.username || userResponse.firstname || 'Unknown',
       },
     };
   } catch (error: any) {
@@ -370,6 +424,9 @@ export async function createPublishEndpoint(outputDir: string): Promise<void> {
  * Publishes all drafts at once
  */
 
+import fs from 'fs';
+import path from 'path';
+
 export default defineEventHandler(async (event) => {
   // Get Strapi URL from runtime config
   const config = useRuntimeConfig();
@@ -387,13 +444,28 @@ export default defineEventHandler(async (event) => {
 
   const token = authHeader.substring(7); // Remove 'Bearer ' prefix
 
-  // Verify token with Strapi
+  // Verify token with Strapi and determine if it's an admin or user token
+  let userResponse: any;
+  let isAdminToken = false;
+
   try {
-    const userResponse = await $fetch(\`\${strapiUrl}/api/users/me\`, {
-      headers: {
-        Authorization: \`Bearer \${token}\`,
-      },
-    });
+    // Try admin token verification first
+    try {
+      userResponse = await $fetch(\`\${strapiUrl}/admin/users/me\`, {
+        headers: {
+          Authorization: \`Bearer \${token}\`,
+        },
+      });
+      isAdminToken = true;
+    } catch (adminError) {
+      // Fallback to regular user token verification
+      userResponse = await $fetch(\`\${strapiUrl}/api/users/me\`, {
+        headers: {
+          Authorization: \`Bearer \${token}\`,
+        },
+      });
+      isAdminToken = false;
+    }
 
     // Get the request body
     const body = await readBody(event);
@@ -406,26 +478,101 @@ export default defineEventHandler(async (event) => {
       });
     }
 
-    // Process all pages
+    // Load manifest to understand field mappings
+    const manifestPath = path.join(process.cwd(), 'cms-manifest.json');
+    let manifest;
+    try {
+      const manifestContent = fs.readFileSync(manifestPath, 'utf-8');
+      manifest = JSON.parse(manifestContent);
+    } catch (error) {
+      console.error('Failed to load manifest:', error);
+      throw createError({
+        statusCode: 500,
+        statusMessage: 'Failed to load CMS manifest',
+      });
+    }
+
+    // Process all pages - call Strapi directly
     const results = await Promise.allSettled(
       pages.map(async ({ page, fields }) => {
-        // Call the save endpoint logic for each page
-        const saveEndpoint = \`/api/cms/save\`;
-
         try {
-          const response = await $fetch(saveEndpoint, {
-            method: 'POST',
-            headers: {
-              'Authorization': \`Bearer \${token}\`,
-              'Content-Type': 'application/json',
-            },
-            body: {
-              page,
-              fields,
-              isDraft: false, // Publish, not draft
-            },
-          });
+          // Get page configuration from manifest
+          const pageConfig = manifest.pages[page];
+          if (!pageConfig) {
+            throw new Error(\`Page "\${page}" not found in manifest\`);
+          }
 
+          // Transform fields to Strapi format
+          const strapiData: Record<string, any> = {};
+          for (const [fieldName, value] of Object.entries(fields)) {
+            const fieldConfig = pageConfig.fields[fieldName];
+            if (!fieldConfig) {
+              console.warn(\`Field "\${fieldName}" not found in manifest for page "\${page}"\`);
+              continue;
+            }
+
+            // Handle different field types
+            if (fieldConfig.type === 'image') {
+              // TODO: Handle image uploads - for now just store the value
+              strapiData[fieldName] = value;
+            } else {
+              strapiData[fieldName] = value;
+            }
+          }
+
+          // Update Strapi v5 content - use different endpoints for admin vs user tokens
+          if (isAdminToken) {
+            // Admin tokens use the content-manager API (Strapi v5)
+            const contentEndpoint = \`\${strapiUrl}/content-manager/single-types/api::\${page}.\${page}\`;
+
+            // Step 1: Update the content
+            await $fetch(contentEndpoint, {
+              method: 'PUT',
+              headers: {
+                'Authorization': \`Bearer \${token}\`,
+                'Content-Type': 'application/json',
+              },
+              body: strapiData,
+            });
+
+            // Step 2: Publish the content (Strapi v5)
+            const publishEndpoint = \`\${strapiUrl}/content-manager/single-types/api::\${page}.\${page}/actions/publish\`;
+            await $fetch(publishEndpoint, {
+              method: 'POST',
+              headers: {
+                'Authorization': \`Bearer \${token}\`,
+                'Content-Type': 'application/json',
+              },
+              body: {},
+            });
+          } else {
+            // User tokens use the regular REST API
+            const strapiEndpoint = \`\${strapiUrl}/api/\${page}\`;
+
+            await $fetch(strapiEndpoint, {
+              method: 'PUT',
+              headers: {
+                'Authorization': \`Bearer \${token}\`,
+                'Content-Type': 'application/json',
+              },
+              body: {
+                data: strapiData,
+              },
+            });
+
+            // Publish using the publish endpoint (Strapi v5)
+            const publishEndpoint = \`\${strapiUrl}/api/\${page}/publish\`;
+            await $fetch(publishEndpoint, {
+              method: 'POST',
+              headers: {
+                'Authorization': \`Bearer \${token}\`,
+                'Content-Type': 'application/json',
+              },
+              body: {},
+            });
+          }
+
+          console.log(\`[CMS Publish] Published "\${page}" to Strapi\`);
           return { page, success: true };
         } catch (error: any) {
           console.error(\`[CMS Publish] Failed to publish "\${page}":\`, error);
@@ -467,7 +614,7 @@ export default defineEventHandler(async (event) => {
       failed,
       user: {
         id: userResponse.id,
-        username: userResponse.username,
+        username: userResponse.username || userResponse.firstname || 'Unknown',
       },
     };
   } catch (error: any) {

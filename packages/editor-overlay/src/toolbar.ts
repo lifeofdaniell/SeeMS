@@ -306,17 +306,21 @@ export class Toolbar {
 
       const result = await response.json();
 
-      // Clear all drafts on success
-      if (result.success) {
-        await this.config.draftStorage.clearAllDrafts();
-
-        // Refresh changes indicator
-        if (this.changesIndicator) {
-          await this.changesIndicator.refresh();
+      // Clear drafts for successfully published pages
+      if (result.successful && result.successful.length > 0) {
+        for (const pageName of result.successful) {
+          await this.config.draftStorage.clearDraft(pageName);
         }
+      }
 
+      // Always refresh changes indicator
+      if (this.changesIndicator) {
+        await this.changesIndicator.refresh();
+      }
+
+      // Show appropriate message
+      if (result.success) {
         this.showToast(`✅ Published ${result.successful.length} page(s)`, 'success');
-
         button.textContent = '✅ Published!';
         setTimeout(() => {
           button.textContent = originalText;
@@ -324,7 +328,17 @@ export class Toolbar {
           button.style.opacity = '1';
         }, 2000);
       } else {
-        throw new Error(`Failed to publish ${result.failed.length} page(s)`);
+        // Partial success - some failed
+        const successCount = result.successful?.length || 0;
+        const failCount = result.failed?.length || 0;
+        this.showToast(`⚠️ Published ${successCount} page(s), ${failCount} failed`, 'error');
+
+        button.textContent = '⚠️ Partial';
+        setTimeout(() => {
+          button.textContent = originalText;
+          button.disabled = false;
+          button.style.opacity = '1';
+        }, 2000);
       }
     } catch (error) {
       console.error('[Toolbar] Publish error:', error);
