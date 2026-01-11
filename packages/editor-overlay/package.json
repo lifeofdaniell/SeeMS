@@ -1,6 +1,6 @@
 {
   "name": "@see-ms/editor-overlay",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Client-side inline editing overlay for SeeMS",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
