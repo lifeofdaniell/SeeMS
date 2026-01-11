@@ -418,7 +418,7 @@ export async function addEditorDependency(outputDir: string): Promise<void> {
       packageJson.dependencies = {};
     }
 
-    packageJson.dependencies["@see-ms/editor-overlay"] = "^0.1.1";
+    packageJson.dependencies["@see-ms/editor-overlay"] = "^1.0.0";
 
     await fs.writeJson(packageJsonPath, packageJson, { spaces: 2 });
   }
