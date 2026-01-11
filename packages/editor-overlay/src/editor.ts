@@ -174,10 +174,33 @@ export function initEditor(config: EnhancedEditorConfig): EditorInstance {
   }
 
   /**
+   * Update reactive Vue state
+   */
+  function updateReactiveState(fieldName: string, value: any): void {
+    if (!currentPage) return;
+
+    // Access global editor state exposed by useEditorContent
+    const editorState = (window as any).__editorState;
+    if (editorState) {
+      // Ensure page content object exists
+      if (!editorState.content[currentPage]) {
+        editorState.content[currentPage] = {};
+      }
+
+      // Update the field value (Vue will reactively update UI)
+      editorState.content[currentPage][fieldName] = value;
+      editorState.hasChanges[currentPage] = true;
+    }
+  }
+
+  /**
    * Save field to draft (debounced 300ms)
    */
   function saveToDraft(fieldName: string, value: any): void {
     if (!config.draftStorage || !currentPage) return;
+
+    // Update reactive state immediately (for instant UI update)
+    updateReactiveState(fieldName, value);
 
     // Clear existing debouncer
     const existing = debouncers.get(fieldName);
@@ -185,7 +208,7 @@ export function initEditor(config: EnhancedEditorConfig): EditorInstance {
       clearTimeout(existing);
     }
 
-    // Set new debouncer
+    // Set new debouncer for persistent storage
     const timeout = setTimeout(() => {
       config.draftStorage!.saveDraft(currentPage!, fieldName, value, 0);
       debouncers.delete(fieldName);
@@ -210,9 +233,18 @@ export function initEditor(config: EnhancedEditorConfig): EditorInstance {
       const reader = new FileReader();
       reader.onload = (event) => {
         const img = element as HTMLImageElement;
-        img.src = event.target?.result as string;
-        data.currentValue = img.src;
+        const newSrc = event.target?.result as string;
+        img.src = newSrc;
+        data.currentValue = newSrc;
         data.isDirty = true;
+
+        // Update reactive state immediately
+        updateReactiveState(data.fieldName, newSrc);
+
+        // Save to draft
+        if (config.draftStorage && currentPage) {
+          saveToDraft(data.fieldName, newSrc);
+        }
       };
       reader.readAsDataURL(file);
     };
@@ -252,16 +284,15 @@ export function initEditor(config: EnhancedEditorConfig): EditorInstance {
    * Apply draft data to elements
    */
   function applyDraft(fields: Record<string, any>): void {
+    // Update reactive state for all draft fields
+    Object.entries(fields).forEach(([fieldName, value]) => {
+      updateReactiveState(fieldName, value);
+    });
+
+    // Update element tracking
     editableElements.forEach((data) => {
       if (fields[data.fieldName] !== undefined) {
         const value = fields[data.fieldName];
-
-        if (data.fieldType === "image") {
-          (data.element as HTMLImageElement).src = value;
-        } else {
-          data.element.textContent = value;
-        }
-
         data.currentValue = value;
         data.isDirty = value !== data.originalValue;
       }

@@ -21,9 +21,10 @@ import {
     writeEmbeddedStyles,
     addStrapiUrlToConfig,
 } from './config-updater';
-import { createEditorPlugin, addEditorDependency, createSaveEndpoint, createPublishEndpoint } from './editor-integration';
+import { createEditorPlugin, createEditorContentComposable, createStrapiContentComposable, addEditorDependency, createSaveEndpoint, createPublishEndpoint, createStrapiBootstrap } from './editor-integration';
 import { setupBoilerplate } from './boilerplate';
 import { generateManifest, writeManifest } from './manifest';
+import { transformAllVuePages } from './vue-transformer';
 import { manifestToSchemas } from './transformer';
 import { writeAllSchemas, createStrapiReadme } from './schema-writer';
 import { extractAllContent, formatForStrapi } from './content-extractor';
@@ -122,6 +123,11 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
         console.log(pc.green(`  ✓ Detected ${totalCollections} collections`));
         console.log(pc.green('  ✓ Generated cms-manifest.json'));
 
+        // Step 8.5: Transform Vue files to use reactive content
+        console.log(pc.blue('\n⚡ Transforming Vue files to reactive templates...'));
+        await transformAllVuePages(pagesDir, manifest);
+        console.log(pc.green(`  ✓ Transformed ${Object.keys(manifest.pages).length} pages to use Vue template syntax`));
+
         // Step 9: Extract content from original HTML
         console.log(pc.blue('\n📝 Extracting content from HTML...'));
         console.log(pc.dim(`  HTML map has ${htmlContentMap.size} entries`));
@@ -177,14 +183,20 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
 
         console.log(pc.blue('\n🎨 Setting up editor overlay...'));
         await createEditorPlugin(outputDir);
+        await createEditorContentComposable(outputDir);
+        await createStrapiContentComposable(outputDir);
         await addEditorDependency(outputDir);
         await createSaveEndpoint(outputDir);
         await createPublishEndpoint(outputDir);
+        await createStrapiBootstrap(outputDir);
         await addStrapiUrlToConfig(outputDir);
         console.log(pc.green('  ✓ Editor plugin created'));
+        console.log(pc.green('  ✓ Editor content composable created'));
+        console.log(pc.green('  ✓ Strapi content composable created'));
         console.log(pc.green('  ✓ Editor dependency added'));
         console.log(pc.green('  ✓ Save endpoint created'));
         console.log(pc.green('  ✓ Publish endpoint created'));
+        console.log(pc.green('  ✓ Strapi bootstrap file generated'));
         console.log(pc.green('  ✓ Strapi config added'));
 
         // Success!
@@ -193,9 +205,11 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
         console.log(pc.dim(`  1. cd ${outputDir}`));
         console.log(pc.dim('  2. Review cms-manifest.json and cms-seed/seed-data.json'));
         console.log(pc.dim('  3. Set up Strapi and install schemas from cms-schemas/'));
-        console.log(pc.dim('  4. Seed Strapi with data from cms-seed/'));
-        console.log(pc.dim('  5. pnpm install && pnpm dev'));
-        console.log(pc.dim('  6. Visit http://localhost:3000?preview=true to edit inline!'));
+        console.log(pc.dim('  4. Copy strapi-bootstrap/index.ts to your Strapi project at src/index.ts'));
+        console.log(pc.dim('     (This auto-enables public read permissions on Strapi startup)'));
+        console.log(pc.dim('  5. Seed Strapi with data from cms-seed/'));
+        console.log(pc.dim('  6. pnpm install && pnpm dev'));
+        console.log(pc.dim('  7. Visit http://localhost:3000?preview=true to edit inline!'));
 
     } catch (error) {
         console.error(pc.red('\n❌ Conversion failed:'));

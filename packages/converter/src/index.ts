@@ -5,8 +5,9 @@
 
 export { convertWebflowExport } from './converter';
 export { detectEditableFields } from './detector';
-export { generateManifest } from './manifest';
+export { generateManifest, readManifest } from './manifest';
 export { generateSchemas } from './generator';
 export { manifestToSchemas } from './transformer';
 export { setupBoilerplate } from './boilerplate';
+export { transformAllVuePages } from './vue-transformer';
 export type { ConversionOptions } from '@see-ms/types';
