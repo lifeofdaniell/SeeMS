@@ -131,14 +131,59 @@ export function useStrapiContent(pageName: string) {
   const strapiUrl = config.public.strapiUrl || 'http://localhost:1337';
   const editorContent = useEditorContent(pageName);
 
-  // Fetch content from Strapi
+  // Helper to transform Strapi image objects to URL strings
+  const transformStrapiImages = (data: any, baseUrl: string): any => {
+    if (!data || typeof data !== 'object') return data;
+
+    const transformed: any = {};
+
+    for (const [key, value] of Object.entries(data)) {
+      if (value && typeof value === 'object') {
+        // Check if it's a Strapi media object
+        if ('url' in value && ('mime' in value || 'formats' in value)) {
+          // It's an image - extract the URL
+          transformed[key] = value.url.startsWith('http')
+            ? value.url
+            : \`\${baseUrl}\${value.url}\`;
+        } else if (Array.isArray(value)) {
+          // Handle arrays (collections of images)
+          transformed[key] = value.map((item) =>
+            item && typeof item === 'object' && 'url' in item
+              ? item.url.startsWith('http')
+                ? item.url
+                : \`\${baseUrl}\${item.url}\`
+              : item
+          );
+        } else {
+          // Recursively transform nested objects
+          transformed[key] = transformStrapiImages(value, baseUrl);
+        }
+      } else {
+        transformed[key] = value;
+      }
+    }
+
+    return transformed;
+  };
+
+  // Fetch content from Strapi with populated media fields
   const { data: strapiData } = useFetch<any>(
     \`\${strapiUrl}/api/\${pageName}\`,
     {
       key: \`strapi-\${pageName}\`,
+      query: {
+        populate: '*', // Strapi v5: Populate all fields including images
+      },
       transform: (response) => {
         // Strapi v5 returns data in response.data
-        return response?.data || response;
+        const data = response?.data || response;
+
+        // Transform image fields from Strapi objects to URL strings
+        if (data && typeof data === 'object') {
+          return transformStrapiImages(data, strapiUrl);
+        }
+
+        return data;
       },
     }
   );
