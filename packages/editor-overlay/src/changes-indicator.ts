@@ -72,6 +72,7 @@ export class ChangesIndicator {
       gap: '6px',
       padding: '8px 16px',
       backgroundColor: '#f9fafb',
+      color: '#1f2937',
       border: '1px solid #e5e7eb',
       borderRadius: '6px',
       fontSize: '14px',

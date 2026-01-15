@@ -25,10 +25,12 @@ import { createEditorPlugin, createEditorContentComposable, createStrapiContentC
 import { setupBoilerplate } from './boilerplate';
 import { generateManifest, writeManifest } from './manifest';
 import { transformAllVuePages } from './vue-transformer';
-import { manifestToSchemas } from './transformer';
-import { writeAllSchemas, createStrapiReadme } from './schema-writer';
+import { manifestToSchemas, getLinkComponentSchema } from './transformer';
+import { writeAllSchemas, createStrapiReadme, writeLinkComponentSchema } from './schema-writer';
 import { extractAllContent, formatForStrapi } from './content-extractor';
 import { writeSeedData, createSeedReadme } from './seed-writer';
+import { extractSharedComponents, replaceWithComponent, replaceComponentMarkers } from './component-extractor';
+import * as cheerio from 'cheerio';
 
 export async function convertWebflowExport(options: ConversionOptions): Promise<void> {
     const { inputDir, outputDir, boilerplate } = options;
@@ -76,12 +78,53 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
             console.log(pc.dim(`  Stored: ${pageName} from ${htmlFile}`));
         }
 
+        // Step 5.5: Extract shared components (navbar, footer, etc.)
+        console.log(pc.blue('\n🧩 Extracting shared components...'));
+        const sharedComponents = await extractSharedComponents(inputDir, outputDir);
+
+        // Track which components are used per page
+        const pageComponentMap = new Map<string, string[]>();
+
+        if (sharedComponents.length > 0) {
+            console.log(pc.green(`  ✓ Extracted ${sharedComponents.length} shared components:`));
+            for (const component of sharedComponents) {
+                console.log(pc.dim(`    - ${component.name} (found in ${component.pages.length} pages)`));
+            }
+
+            // Replace shared sections in HTML with component tags
+            // This modifies htmlContentMap to use component imports
+            for (const [pageName, html] of htmlContentMap.entries()) {
+                const $ = cheerio.load(html);
+                let modified = false;
+                const usedComponents: string[] = [];
+
+                for (const component of sharedComponents) {
+                    // Check if this page has the component
+                    if (component.pages.includes(pageName)) {
+                        replaceWithComponent($, component.selector, component.name);
+                        usedComponents.push(component.name);
+                        modified = true;
+                    }
+                }
+
+                if (modified) {
+                    // Serialize HTML and replace component markers with PascalCase tags
+                    const serializedHtml = replaceComponentMarkers($.html());
+                    htmlContentMap.set(pageName, serializedHtml);
+                    pageComponentMap.set(pageName, usedComponents);
+                }
+            }
+        } else {
+            console.log(pc.dim('  No shared components detected across pages'));
+        }
+
         // Step 6: Convert HTML files to Vue components
         console.log(pc.blue('\n⚙️  Converting HTML to Vue components...'));
         let allEmbeddedStyles = '';
 
         for (const htmlFile of htmlFiles) {
-            const html = htmlContentMap.get(htmlFile.replace('.html', '').replace(/\//g, '-'))!;
+            const pageName = htmlFile.replace('.html', '').replace(/\//g, '-');
+            const html = htmlContentMap.get(pageName)!;
             const parsed = parseHTML(html, htmlFile);
 
             // Collect embedded styles
@@ -92,9 +135,11 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
             // Transform HTML for Nuxt
             const transformed = transformForNuxt(parsed.htmlContent);
 
-            // Convert to Vue component
-            const pageName = htmlFile.replace('.html', '').replace(/\//g, '-');
-            const vueComponent = htmlToVueComponent(transformed, pageName);
+            // Get shared component imports for this page
+            const componentImports = pageComponentMap.get(pageName);
+
+            // Convert to Vue component (with component imports if any)
+            const vueComponent = htmlToVueComponent(transformed, pageName, componentImports);
 
             // Write to pages directory (this will overwrite existing files)
             await writeVueComponent(outputDir, htmlFile, vueComponent);
@@ -107,7 +152,10 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
         // Step 8: Generate CMS manifest
         console.log(pc.blue('\n🔍 Analyzing pages for CMS fields...'));
         const pagesDir = path.join(outputDir, 'pages');
-        const manifest = await generateManifest(pagesDir);
+        const manifest = await generateManifest(pagesDir, {
+            collectionClasses: options.collectionClasses,
+            collectionNames: options.collectionNames,
+        });
         await writeManifest(outputDir, manifest);
 
         const totalFields = Object.values(manifest.pages).reduce(
@@ -154,6 +202,13 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
         const schemas = manifestToSchemas(manifest);
         await writeAllSchemas(outputDir, schemas);
         await createStrapiReadme(outputDir);
+
+        // Write link component schema if any link fields exist
+        const linkSchema = getLinkComponentSchema(manifest);
+        if (linkSchema) {
+            await writeLinkComponentSchema(outputDir);
+            console.log(pc.dim('  ✓ Generated shared.link component schema'));
+        }
 
         console.log(pc.green(`  ✓ Generated ${Object.keys(schemas).length} Strapi content types`));
         console.log(pc.dim('    View schemas in: cms-schemas/'));

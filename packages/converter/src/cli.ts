@@ -12,11 +12,19 @@ import fs from "fs-extra";
 import path from "path";
 import { convertWebflowExport } from "./converter";
 import { completeSetup } from "./strapi-setup";
-import { manifestToSchemas } from "./transformer";
-import { writeAllSchemas, createStrapiReadme } from "./schema-writer";
+import { manifestToSchemas, getLinkComponentSchema } from "./transformer";
+import { writeAllSchemas, createStrapiReadme, writeLinkComponentSchema } from "./schema-writer";
 import type { CMSManifest } from "@see-ms/types";
 
 const program = new Command();
+
+/**
+ * Collection class with its display name
+ */
+interface CollectionConfig {
+  className: string;
+  collectionName: string;
+}
 
 /**
  * Prompt user for input
@@ -36,21 +44,89 @@ async function prompt(question: string): Promise<string> {
 }
 
 /**
- * Ask yes/no question
+ * Ask yes/no question with default
  */
-async function confirm(question: string): Promise<boolean> {
-  const answer = await prompt(`${question} (y/n): `);
+async function confirm(question: string, defaultYes: boolean = true): Promise<boolean> {
+  const hint = defaultYes ? "(Y/n)" : "(y/N)";
+  const answer = await prompt(`${question} ${hint}: `);
+  if (answer === "") return defaultYes;
   return answer.toLowerCase() === "y" || answer.toLowerCase() === "yes";
+}
+
+/**
+ * Convert class name to a readable collection name
+ * e.g. "c-blogpost" -> "blogposts", "team-member_card" -> "team_members"
+ */
+function classToCollectionName(className: string): string {
+  // Remove common prefixes
+  let name = className
+    .replace(/^c[-_]/, '')
+    .replace(/^cc[-_]/, '')
+    .replace(/[-_]card$/, '')
+    .replace(/[-_]item$/, '')
+    .replace(/[-_]wrapper$/, '');
+
+  // Convert to snake_case
+  name = name.replace(/-/g, '_');
+
+  // Make plural if not already
+  if (!name.endsWith('s')) {
+    name += 's';
+  }
+
+  return name;
+}
+
+/**
+ * Prompt for collection classes and their names
+ */
+async function promptForCollections(): Promise<CollectionConfig[]> {
+  console.log("");
+  console.log(pc.cyan("📋 Collection Types Configuration"));
+  console.log(pc.dim("   Collections are repeating items like blog posts, team members, FAQs, etc."));
+  console.log("");
+
+  const classesInput = await prompt(
+    pc.white("Enter collection element classes (comma-separated, or press enter to skip):\n") +
+    pc.dim("   Example: c-blogpost, team-member_card, c-faq-item\n") +
+    pc.cyan("   > ")
+  );
+
+  if (!classesInput) {
+    return [];
+  }
+
+  const classes = classesInput.split(",").map(c => c.trim()).filter(Boolean);
+  const collections: CollectionConfig[] = [];
+
+  console.log("");
+  console.log(pc.dim("   Now let's name each collection type:"));
+  console.log("");
+
+  for (const className of classes) {
+    const suggestedName = classToCollectionName(className);
+    const nameInput = await prompt(
+      pc.white(`   "${className}" → Collection name `) +
+      pc.dim(`(default: ${suggestedName}): `)
+    );
+
+    collections.push({
+      className,
+      collectionName: nameInput || suggestedName
+    });
+  }
+
+  return collections;
 }
 
 program
   .name("cms")
   .description("SeeMS - Webflow to CMS converter")
-  .version("0.1.2");
+  .version("0.1.3");
 
 program
   .command("convert")
-  .description("Convert Webflow export to Nuxt 3 project")
+  .description("Convert Webflow export to Nuxt 3 project with CMS integration")
   .argument("<input>", "Path to Webflow export directory")
   .argument("<output>", "Path to output Nuxt project directory")
   .option(
@@ -58,43 +134,97 @@ program
     "Boilerplate source (GitHub URL or local path)"
   )
   .option("-o, --overrides <path>", "Path to overrides JSON file")
-  .option("--generate-schemas", "Generate CMS schemas immediately")
   .option(
     "--cms <type>",
     "CMS backend type (strapi|contentful|sanity)",
     "strapi"
   )
-  .option("--no-interactive", "Skip interactive prompts")
+  .option("--skip-prompts", "Skip interactive prompts (for CI/CD)")
+  .option("--collection-classes <classes>", "Comma-separated collection class patterns")
+  .option("--no-content", "Skip generating initial CMS content")
   .action(async (input, output, options) => {
     try {
+      console.log("");
+      console.log(pc.cyan(pc.bold("🚀 SeeMS Converter")));
+      console.log(pc.dim(`   Converting: ${input} → ${output}`));
+      console.log("");
+
+      const skipPrompts = options.skipPrompts || false;
+      let collections: CollectionConfig[] = [];
+      let generateContent = true;
+
+      // Prompt for collections (unless skipped or provided via CLI)
+      if (!skipPrompts) {
+        if (options.collectionClasses) {
+          // Parse CLI option
+          const classes = options.collectionClasses.split(",").map((c: string) => c.trim());
+          collections = classes.map((className: string) => ({
+            className,
+            collectionName: classToCollectionName(className)
+          }));
+        } else {
+          collections = await promptForCollections();
+        }
+
+        // Prompt for content generation
+        console.log("");
+        generateContent = await confirm(
+          pc.white("Generate initial CMS content from HTML?")
+        );
+      } else if (options.collectionClasses) {
+        const classes = options.collectionClasses.split(",").map((c: string) => c.trim());
+        collections = classes.map((className: string) => ({
+          className,
+          collectionName: classToCollectionName(className)
+        }));
+      }
+
+      // Show configuration
+      console.log("");
+      console.log(pc.green("✓ Configuration:"));
+      if (collections.length > 0) {
+        console.log(pc.dim(`  • Collections: ${collections.map(c => `${c.className} → ${c.collectionName}`).join(", ")}`));
+      } else {
+        console.log(pc.dim("  • Collections: none (auto-detect disabled)"));
+      }
+      console.log(pc.dim(`  • Generate content: ${generateContent}`));
+      console.log("");
+
       // Run conversion
+      console.log(pc.blue("📦 Running conversion..."));
+      console.log("");
+
       await convertWebflowExport({
         inputDir: input,
         outputDir: output,
         boilerplate: options.boilerplate,
         overridesPath: options.overrides,
-        generateStrapi: options.generateSchemas,
-        cmsBackend: options.cms
+        generateStrapi: true,
+        cmsBackend: options.cms,
+        collectionClasses: collections.map(c => c.className),
+        collectionNames: Object.fromEntries(collections.map(c => [c.className, c.collectionName])),
+        extractComponents: true,
+        skipPrompts: true,
+        generateContent: generateContent && !options.noContent,
       });
 
-      // Interactive Strapi setup (if not disabled)
-      if (options.interactive && options.cms === "strapi") {
-        console.log(""); // blank line
+      console.log(pc.green("\n🎉 Conversion complete!"));
+
+      // Optional Strapi server setup
+      if (options.cms === "strapi" && !skipPrompts) {
+        console.log("");
         const shouldSetup = await confirm(
-          pc.cyan("🎯 Would you like to setup Strapi now?")
+          pc.cyan("🎯 Would you like to setup Strapi server now?"),
+          false
         );
 
         if (shouldSetup) {
           const strapiDir = await prompt(
-            pc.cyan(
-              "📁 Enter path to your Strapi directory (e.g., ./strapi-dev): "
-            )
+            pc.cyan("📁 Enter path to your Strapi directory: ")
           );
 
           if (strapiDir) {
-            console.log(""); // blank line
-            console.log(pc.cyan("🚀 Starting Strapi setup..."));
-            console.log(""); // blank line
+            console.log(pc.cyan("\n🚀 Starting Strapi setup..."));
 
             try {
               await completeSetup({
@@ -104,21 +234,17 @@ program
             } catch (error) {
               console.error(pc.red("\n❌ Strapi setup failed"));
               console.error(pc.dim("You can run setup manually later with:"));
-              console.error(
-                pc.dim(`  cms setup-strapi ${output} ${strapiDir}`)
-              );
+              console.error(pc.dim(`  cms setup-strapi ${output} ${strapiDir}`));
             }
           }
         } else {
-          console.log(""); // blank line
-          console.log(pc.dim("💡 You can setup Strapi later with:"));
-          console.log(
-            pc.dim(`   cms setup-strapi ${output} <strapi-directory>`)
-          );
+          console.log(pc.dim("\n💡 You can setup Strapi later with:"));
+          console.log(pc.dim(`   cms setup-strapi ${output} <strapi-directory>`));
         }
       }
     } catch (error) {
-      console.error(pc.red("Conversion failed"));
+      console.error(pc.red("\nConversion failed:"));
+      console.error(pc.red(error instanceof Error ? error.message : String(error)));
       process.exit(1);
     }
   });
@@ -158,7 +284,6 @@ program
       console.log(pc.cyan("🗂️  SeeMS Schema Generator"));
       console.log(pc.dim(`Reading manifest from: ${manifestPath}`));
 
-      // Read the manifest file
       const manifestExists = await fs.pathExists(manifestPath);
       if (!manifestExists) {
         throw new Error(`Manifest file not found: ${manifestPath}`);
@@ -169,10 +294,8 @@ program
 
       console.log(pc.green(`  ✓ Manifest loaded successfully`));
 
-      // Determine output directory
       const outputDir = options.output || path.dirname(manifestPath);
 
-      // Only support Strapi for now
       if (options.type !== "strapi") {
         console.log(
           pc.yellow(
@@ -181,10 +304,17 @@ program
         );
       }
 
-      // Generate schemas
       console.log(pc.blue("\n📋 Generating Strapi schemas..."));
       const schemas = manifestToSchemas(manifest);
       await writeAllSchemas(outputDir, schemas);
+
+      // Write link component if needed
+      const linkSchema = getLinkComponentSchema(manifest);
+      if (linkSchema) {
+        await writeLinkComponentSchema(outputDir);
+        console.log(pc.dim("  ✓ Generated shared.link component"));
+      }
+
       await createStrapiReadme(outputDir);
 
       console.log(

@@ -238,6 +238,8 @@ export async function createEditorPlugin(outputDir: string): Promise<void> {
 
 /**
  * Disable Lenis smooth scroll to allow native scrolling in edit mode
+ * Note: The primary approach is to conditionally render <VueLenis> in the layout.
+ * This function serves as a fallback for existing projects that haven't been updated.
  */
 function disableLenisInEditMode() {
   try {
@@ -245,28 +247,48 @@ function disableLenisInEditMode() {
     const lenisInstances = [
       (window as any).lenis,
       (window as any).__lenis,
-      document.querySelector('.lenis'),
+      (window as any).Lenis,
     ];
 
     for (const lenis of lenisInstances) {
+      if (lenis && typeof lenis.stop === 'function') {
+        lenis.stop();
+      }
       if (lenis && typeof lenis.destroy === 'function') {
         lenis.destroy();
         return;
       }
     }
 
-    // Check for Vue Lenis component instances
-    const lenisElements = document.querySelectorAll('[data-lenis], .lenis');
-    if (lenisElements.length > 0) {
-      // Try to find and destroy via data attributes or component instances
-      lenisElements.forEach((el: any) => {
-        if (el.__lenis && typeof el.__lenis.destroy === 'function') {
-          el.__lenis.destroy();
+    // Check for Vue Lenis component instances via refs
+    // VueLenis stores the instance in the component's exposed properties
+    const lenisElements = document.querySelectorAll('[data-lenis], .lenis, [data-lenis-prevent]');
+    lenisElements.forEach((el: any) => {
+      // Try various ways Vue Lenis might store the instance
+      const possibleInstances = [
+        el.__lenis,
+        el._lenis,
+        el.$lenis,
+        el.__vue__?.exposed?.lenis,
+        el.__vueParentComponent?.exposed?.lenis,
+      ];
+
+      for (const instance of possibleInstances) {
+        if (instance && typeof instance.stop === 'function') {
+          instance.stop();
         }
-      });
-    }
+        if (instance && typeof instance.destroy === 'function') {
+          instance.destroy();
+          return;
+        }
+      }
+    });
+
+    // Also remove lenis-related classes from html/body that might affect scrolling
+    document.documentElement.classList.remove('lenis', 'lenis-smooth');
+    document.body.classList.remove('lenis', 'lenis-smooth');
   } catch (error) {
-    // Silently fail - Lenis may not be present
+    // Silently fail - Lenis may not be present or already disabled via layout
   }
 }
 
@@ -491,7 +513,7 @@ export default defineEventHandler(async (event) => {
     }
 
     // Load manifest to understand field mappings
-    const manifestPath = path.join(process.cwd(), 'cms-manifest.json');
+    const manifestPath = path.join(process.cwd(), 'public', 'cms-manifest.json');
     let manifest;
     try {
       const manifestContent = fs.readFileSync(manifestPath, 'utf-8');
@@ -878,7 +900,7 @@ export default defineEventHandler(async (event) => {
     }
 
     // Load manifest to understand field mappings
-    const manifestPath = path.join(process.cwd(), 'cms-manifest.json');
+    const manifestPath = path.join(process.cwd(), 'public', 'cms-manifest.json');
     let manifest;
     try {
       const manifestContent = fs.readFileSync(manifestPath, 'utf-8');

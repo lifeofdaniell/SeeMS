@@ -192,6 +192,27 @@ async function installSchemas(
 
   const schemaDir = path.join(projectDir, "cms-schemas");
 
+  // Install components first (e.g., shared.link)
+  const componentsDir = path.join(schemaDir, "components");
+  if (await fs.pathExists(componentsDir)) {
+    const componentFiles = await glob("**/*.json", {
+      cwd: componentsDir,
+      absolute: false
+    });
+
+    if (componentFiles.length > 0) {
+      console.log(`   Found ${componentFiles.length} component(s)`);
+      for (const file of componentFiles) {
+        const sourcePath = path.join(componentsDir, file);
+        // Components go to src/components/<category>/<name>.json
+        const targetPath = path.join(strapiDir, "src", "components", file);
+        await fs.ensureDir(path.dirname(targetPath));
+        await fs.copy(sourcePath, targetPath);
+        console.log(`   ✓ Component: ${file}`);
+      }
+    }
+  }
+
   const schemaFiles = await glob("*.json", {
     cwd: schemaDir,
     absolute: false

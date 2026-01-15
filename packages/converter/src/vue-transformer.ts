@@ -2,10 +2,20 @@
  * Transform static Vue files to use reactive content from Strapi
  */
 
-import * as cheerio from 'cheerio';
-import fs from 'fs-extra';
-import path from 'path';
-import type { CMSManifest, CollectionMapping } from '@see-ms/types';
+import * as cheerio from "cheerio";
+import fs from "fs-extra";
+import path from "path";
+import type { CMSManifest, CollectionMapping } from "@see-ms/types";
+
+/**
+ * Check if element is a safe leaf (no structural children)
+ * Structural children would be destroyed by empty()
+ */
+function isSafeToEmpty($el: cheerio.Cheerio<any>): boolean {
+  // If element has child elements, it's not safe to empty
+  // (would destroy nested structure)
+  return $el.children().length === 0;
+}
 
 /**
  * Replace element content with Vue template binding
@@ -16,18 +26,47 @@ function replaceWithBinding(
   fieldName: string,
   type: string
 ): void {
-  if (type === 'image') {
-    const $img = $el.find('img').first();
-    if ($img.length) {
-      // Replace src with Vue binding
-      $img.attr(':src', `content.${fieldName}`);
-      $img.removeAttr('src');
+  if (type === "image") {
+    // Check if element is an img or contains an img
+    if ($el.is("img")) {
+      $el.attr(":src", `content.${fieldName}`);
+      $el.removeAttr("src");
+    } else {
+      const $img = $el.find("img").first();
+      if ($img.length) {
+        // Replace src with Vue binding
+        $img.attr(":src", `content.${fieldName}`);
+        $img.removeAttr("src");
+      }
     }
-  } else if (type === 'rich') {
+  } else if (type === "link") {
+    // Link field uses composite {url, text, newTab} object
+    // Find the anchor element
+    const $link = $el.is("a") || $el.is("NuxtLink") ? $el : $el.find("a, NuxtLink").first();
+    if ($link.length) {
+      $link.attr(":href", `content.${fieldName}?.url`);
+      $link.attr(":target", `content.${fieldName}?.newTab ? '_blank' : undefined`);
+      $link.removeAttr("href");
+      $link.removeAttr("target");
+      // Only empty if safe (no nested children)
+      if (isSafeToEmpty($link)) {
+        $link.empty();
+        $link.text(`{{ content.${fieldName}?.text }}`);
+      }
+    }
+  } else if (type === "rich") {
+    // SAFETY CHECK: Don't empty elements with children (would destroy structure)
+    if (!isSafeToEmpty($el)) {
+      return;
+    }
     // For rich text, use v-html
-    $el.attr('v-html', `content.${fieldName}`);
+    $el.attr("v-html", `content.${fieldName}`);
     $el.empty(); // Remove static content
   } else {
+    // SAFETY CHECK: Don't empty elements with children (would destroy structure)
+    if (!isSafeToEmpty($el)) {
+      return;
+    }
     // For plain text, use {{ }}
     $el.empty();
     $el.text(`{{ content.${fieldName} }}`);
@@ -51,23 +90,47 @@ function transformCollection(
   const $first = $items.first();
 
   // Add v-for to first item
-  $first.attr('v-for', `(item, index) in content.${collectionName}`);
-  $first.attr(':key', 'index');
+  $first.attr("v-for", `(item, index) in content.${collectionName}`);
+  $first.attr(":key", "index");
 
   // Replace fields within the collection item
-  Object.entries(collection.fields).forEach(([fieldName, selector]) => {
+  Object.entries(collection.fields).forEach(([fieldName, fieldConfig]) => {
+    // Get selector from field config
+    const selector = typeof fieldConfig === "string"
+      ? fieldConfig
+      : (fieldConfig as any).selector || fieldConfig;
+    const fieldType = typeof fieldConfig === "object" ? (fieldConfig as any).type : undefined;
+
     const $fieldEl = $first.find(selector as string);
     if ($fieldEl.length) {
-      if (fieldName === 'image') {
-        const $img = $fieldEl.find('img').first();
-        if ($img.length) {
-          $img.attr(':src', 'item.image');
-          $img.removeAttr('src');
+      // Determine type from config or field name
+      const isImage = fieldType === "image" || fieldName === "image" || fieldName.includes("image");
+      const isLink = fieldType === "link" || fieldName === "link" || fieldName === "url";
+
+      if (isImage) {
+        // Check if element is img or contains img
+        if ($fieldEl.is("img")) {
+          $fieldEl.attr(":src", `item.${fieldName}`);
+          $fieldEl.removeAttr("src");
+        } else {
+          const $img = $fieldEl.find("img").first();
+          if ($img.length) {
+            $img.attr(":src", `item.${fieldName}`);
+            $img.removeAttr("src");
+          }
         }
-      } else if (fieldName === 'link') {
-        $fieldEl.attr(':to', 'item.link');
-        $fieldEl.removeAttr('to');
-        $fieldEl.removeAttr('href');
+      } else if (isLink) {
+        // Link uses composite {url, text, newTab} object
+        const $link = $fieldEl.is("a") || $fieldEl.is("NuxtLink") ? $fieldEl : $fieldEl.find("a, NuxtLink").first();
+        if ($link.length) {
+          $link.attr(":href", `item.${fieldName}?.url`);
+          $link.attr(":target", `item.${fieldName}?.newTab ? '_blank' : undefined`);
+          $link.removeAttr("href");
+          $link.removeAttr("target");
+          $link.removeAttr("to");
+          $link.empty();
+          $link.text(`{{ item.${fieldName}?.text }}`);
+        }
       } else {
         $fieldEl.empty();
         $fieldEl.text(`{{ item.${fieldName} }}`);
@@ -91,10 +154,10 @@ export async function transformVueToReactive(
   if (!pageManifest) return;
 
   // Read the Vue file
-  const vueContent = await fs.readFile(vueFilePath, 'utf-8');
+  const vueContent = await fs.readFile(vueFilePath, "utf-8");
 
   // Check if already transformed (has useStrapiContent call)
-  if (vueContent.includes('useStrapiContent')) {
+  if (vueContent.includes("useStrapiContent")) {
     console.log(`  Skipping ${pageName} - already transformed`);
     return;
   }
@@ -137,8 +200,8 @@ export async function transformVueToReactive(
 
   // Also clean up any remaining html/head tags
   transformedTemplate = transformedTemplate
-    .replace(/<\/?html[^>]*>/gi, '')
-    .replace(/<head><\/head>/gi, '')
+    .replace(/<\/?html[^>]*>/gi, "")
+    .replace(/<head><\/head>/gi, "")
     .trim();
 
   // Remove the single wrapper <div> if it exists (from htmlToVueComponent)
@@ -156,7 +219,7 @@ const { content } = useStrapiContent('${pageName}');
 
   // Single root element - no pending check wrapper
   // Just indent the content properly
-  const finalTemplate = transformedTemplate.split('\n').map(line => '  ' + line).join('\n');
+  const finalTemplate = transformedTemplate.split("\n").map(line => "  " + line).join("\n");
 
   // Combine into new Vue component
   const newVueContent = `${scriptSetup}
@@ -167,7 +230,7 @@ ${finalTemplate}
 `;
 
   // Write back to file
-  await fs.writeFile(vueFilePath, newVueContent, 'utf-8');
+  await fs.writeFile(vueFilePath, newVueContent, "utf-8");
 }
 
 /**
@@ -180,8 +243,8 @@ export async function transformAllVuePages(
   const vueFiles = await fs.readdir(pagesDir);
 
   for (const file of vueFiles) {
-    if (file.endsWith('.vue')) {
-      const pageName = file.replace('.vue', '');
+    if (file.endsWith(".vue")) {
+      const pageName = file.replace(".vue", "");
       const vueFilePath = path.join(pagesDir, file);
       await transformVueToReactive(vueFilePath, pageName, manifest);
     }
