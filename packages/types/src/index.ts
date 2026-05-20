@@ -2,7 +2,7 @@
  * Core type definitions for SeeMS CMS manifest and configuration
  */
 
-export type FieldType = 'plain' | 'rich' | 'html' | 'image' | 'link' | 'email' | 'phone';
+export type FieldType = 'plain' | 'rich' | 'html' | 'image' | 'icon' | 'link' | 'email' | 'phone';
 
 /**
  * Link field value structure with both URL and text editable
@@ -45,6 +45,8 @@ export interface FieldMapping {
   source?: 'auto' | 'attribute';
   /** Attribute to extract value from (e.g., 'src' for images, 'href' for links) */
   attribute?: string;
+  /** Provider-specific mapping metadata. Keep optional so the core manifest remains portable. */
+  providers?: Record<string, Record<string, unknown>>;
 }
 
 export interface CollectionFieldMapping {
@@ -90,6 +92,10 @@ export interface SharedComponent {
   pages: string[];
   /** Editable fields within the component */
   fields?: Record<string, FieldMapping>;
+  /** How confident the extractor is that this should be componentized */
+  confidence?: 'high' | 'medium' | 'low';
+  /** Why this component was detected */
+  reason?: string;
 }
 
 export interface CMSManifest {
@@ -105,6 +111,74 @@ export interface CMSManifest {
   };
   /** Custom overrides from developer */
   overrides?: ManifestOverrides;
+  /** Provider-specific manifest metadata */
+  providers?: Record<string, Record<string, unknown>>;
+}
+
+export interface SeeMSConfig {
+  cms?: {
+    provider?: 'strapi' | 'contentful' | 'sanity';
+    strapi?: {
+      scaffold?: boolean;
+      directory?: string;
+      packageManager?: 'npm' | 'pnpm' | 'yarn';
+      install?: boolean;
+    };
+  };
+  collections?: Array<{
+    className: string;
+    name?: string;
+    selector?: string;
+  }>;
+  components?: {
+    enabled?: boolean;
+    minOccurrences?: number;
+    minSectionSize?: number;
+    include?: string[];
+    exclude?: string[];
+  };
+  ignore?: {
+    selectors?: string[];
+    classes?: string[];
+  };
+  fields?: Record<string, Record<string, Partial<FieldMapping>>>;
+  editor?: {
+    enabled?: boolean;
+    previewParam?: string;
+  };
+}
+
+export interface ConversionReport {
+  generatedAt: string;
+  stages: Array<'scan' | 'analyze' | 'plan' | 'convert' | 'cms' | 'editor'>;
+  pages: Array<{
+    source: string;
+    pageId: string;
+    route: string;
+    output: string;
+  }>;
+  assets: {
+    css: number;
+    images: number;
+    fonts: number;
+    js: number;
+    preservedStructure: boolean;
+  };
+  components: Array<{
+    name: string;
+    selector: string;
+    pages: string[];
+    confidence?: 'high' | 'medium' | 'low';
+    reason?: string;
+  }>;
+  cms: {
+    provider: 'strapi' | 'contentful' | 'sanity';
+    fields: number;
+    collections: number;
+    schemas: number;
+    seedPages: number;
+  };
+  warnings: string[];
 }
 
 export interface ManifestOverrides {
@@ -141,6 +215,12 @@ export interface ConversionOptions {
   skipPrompts?: boolean;
   /** Whether to generate initial CMS content from HTML */
   generateContent?: boolean;
+  /** Whether to install and wire the inline editor */
+  editor?: boolean;
+  /** Path to see-ms.config.ts/json */
+  configPath?: string;
+  /** Resolved project configuration */
+  config?: SeeMSConfig;
 }
 
 /**

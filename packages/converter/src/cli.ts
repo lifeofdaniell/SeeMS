@@ -11,10 +11,12 @@ import * as readline from "readline";
 import fs from "fs-extra";
 import path from "path";
 import { convertWebflowExport } from "./converter";
-import { completeSetup } from "./strapi-setup";
+import { completeSetup, scaffoldStrapiProject } from "./strapi-setup";
 import { manifestToSchemas, getLinkComponentSchema } from "./transformer";
 import { writeAllSchemas, createStrapiReadme, writeLinkComponentSchema } from "./schema-writer";
-import type { CMSManifest } from "@see-ms/types";
+import { analyzeWebflowExport, renderReportMarkdown } from "./analyzer";
+import { loadSeeMSConfig, mergeConfig, normalizeConfig } from "./config";
+import type { CMSManifest, ConversionReport, SeeMSConfig } from "@see-ms/types";
 
 const program = new Command();
 
@@ -77,6 +79,11 @@ function classToCollectionName(className: string): string {
   return name;
 }
 
+function toPackageManager(value: string): "npm" | "pnpm" | "yarn" {
+  if (value === "pnpm" || value === "yarn") return value;
+  return "npm";
+}
+
 /**
  * Prompt for collection classes and their names
  */
@@ -134,6 +141,7 @@ program
     "Boilerplate source (GitHub URL or local path)"
   )
   .option("-o, --overrides <path>", "Path to overrides JSON file")
+  .option("--config <path>", "Path to see-ms config file")
   .option(
     "--cms <type>",
     "CMS backend type (strapi|contentful|sanity)",
@@ -142,6 +150,11 @@ program
   .option("--skip-prompts", "Skip interactive prompts (for CI/CD)")
   .option("--collection-classes <classes>", "Comma-separated collection class patterns")
   .option("--no-content", "Skip generating initial CMS content")
+  .option("--no-editor", "Skip installing and wiring the inline editor")
+  .option("--scaffold-strapi <dir>", "Scaffold a new Strapi project after conversion")
+  .option("--strapi-dir <dir>", "Existing Strapi project to set up after conversion")
+  .option("--strapi-package-manager <manager>", "Package manager for new Strapi project (npm|pnpm|yarn)", "npm")
+  .option("--no-strapi-install", "Scaffold Strapi without installing dependencies")
   .action(async (input, output, options) => {
     try {
       console.log("");
@@ -150,8 +163,13 @@ program
       console.log("");
 
       const skipPrompts = options.skipPrompts || false;
-      let collections: CollectionConfig[] = [];
+      const loadedConfig = options.config ? await loadSeeMSConfig(options.config) : {};
+      let collections: CollectionConfig[] = (loadedConfig.collections || []).map(collection => ({
+        className: collection.className,
+        collectionName: collection.name || classToCollectionName(collection.className)
+      }));
       let generateContent = true;
+      let enableEditor = options.editor !== false && loadedConfig.editor?.enabled !== false;
 
       // Prompt for collections (unless skipped or provided via CLI)
       if (!skipPrompts) {
@@ -162,14 +180,40 @@ program
             className,
             collectionName: classToCollectionName(className)
           }));
-        } else {
+        } else if (collections.length === 0) {
           collections = await promptForCollections();
+        } else {
+          console.log(pc.dim(`Using ${collections.length} collection hint(s) from config.`));
         }
 
         // Prompt for content generation
         console.log("");
+        const previewConfig = normalizeConfig(mergeConfig(loadedConfig, {
+          collections: collections.map(collection => ({
+            className: collection.className,
+            name: collection.collectionName
+          }))
+        }));
+        const analysis = await analyzeWebflowExport(input, previewConfig);
+        console.log(pc.cyan("🔎 Analysis Preview"));
+        console.log(pc.dim(`  • Pages: ${analysis.pages.length}`));
+        analysis.pages.slice(0, 8).forEach(page => {
+          console.log(pc.dim(`    - ${page.sourcePath} → ${page.route}`));
+        });
+        if (analysis.pages.length > 8) {
+          console.log(pc.dim(`    … ${analysis.pages.length - 8} more`));
+        }
+        console.log(pc.dim(`  • Component candidates: ${analysis.componentCandidates.length}`));
+        analysis.componentCandidates.slice(0, 8).forEach(component => {
+          console.log(pc.dim(`    - ${component.name} (${component.confidence}) on ${component.pages.length} pages`));
+        });
+
         generateContent = await confirm(
           pc.white("Generate initial CMS content from HTML?")
+        );
+        enableEditor = await confirm(
+          pc.white("Install and wire the inline editor overlay?"),
+          true
         );
       } else if (options.collectionClasses) {
         const classes = options.collectionClasses.split(",").map((c: string) => c.trim());
@@ -188,17 +232,32 @@ program
         console.log(pc.dim("  • Collections: none (auto-detect disabled)"));
       }
       console.log(pc.dim(`  • Generate content: ${generateContent}`));
+      console.log(pc.dim(`  • Inline editor: ${enableEditor ? "enabled" : "disabled"}`));
       console.log("");
 
       // Run conversion
       console.log(pc.blue("📦 Running conversion..."));
       console.log("");
 
+      const cliConfig: SeeMSConfig = {
+        cms: { provider: options.cms },
+        collections: collections.map(collection => ({
+          className: collection.className,
+          name: collection.collectionName
+        })),
+        editor: {
+          enabled: enableEditor,
+          previewParam: "preview"
+        }
+      };
+
       await convertWebflowExport({
         inputDir: input,
         outputDir: output,
         boilerplate: options.boilerplate,
         overridesPath: options.overrides,
+        configPath: options.config,
+        config: mergeConfig(loadedConfig, cliConfig),
         generateStrapi: true,
         cmsBackend: options.cms,
         collectionClasses: collections.map(c => c.className),
@@ -206,15 +265,35 @@ program
         extractComponents: true,
         skipPrompts: true,
         generateContent: generateContent && !options.noContent,
+        editor: enableEditor,
       });
 
       console.log(pc.green("\n🎉 Conversion complete!"));
+
+      const configStrapi = loadedConfig.cms?.strapi;
+      const requestedStrapiDir = options.scaffoldStrapi || options.strapiDir || configStrapi?.directory;
+      const shouldScaffoldFromConfig = Boolean(configStrapi?.scaffold && requestedStrapiDir);
+      if (options.cms === "strapi" && skipPrompts && requestedStrapiDir) {
+        await completeSetup({
+          projectDir: output,
+          strapiDir: requestedStrapiDir,
+          scaffold: Boolean(options.scaffoldStrapi) || shouldScaffoldFromConfig,
+          scaffoldOptions: {
+            strapiDir: requestedStrapiDir,
+            packageManager: toPackageManager(options.strapiPackageManager || configStrapi?.packageManager || "npm"),
+            install: options.strapiInstall !== false && configStrapi?.install !== false,
+            run: false,
+            gitInit: false,
+            typescript: true
+          }
+        });
+      }
 
       // Optional Strapi server setup
       if (options.cms === "strapi" && !skipPrompts) {
         console.log("");
         const shouldSetup = await confirm(
-          pc.cyan("🎯 Would you like to setup Strapi server now?"),
+          pc.cyan("🎯 Would you like to set up Strapi now?"),
           false
         );
 
@@ -224,12 +303,29 @@ program
           );
 
           if (strapiDir) {
+            const strapiExists = await fs.pathExists(strapiDir);
+            const shouldScaffold = !strapiExists
+              ? await confirm(
+                pc.cyan("That Strapi directory does not exist. Scaffold a new Strapi project there?"),
+                true
+              )
+              : false;
+
             console.log(pc.cyan("\n🚀 Starting Strapi setup..."));
 
             try {
               await completeSetup({
                 projectDir: output,
-                strapiDir: strapiDir
+                strapiDir: strapiDir,
+                scaffold: shouldScaffold,
+                scaffoldOptions: {
+                  strapiDir,
+                  packageManager: toPackageManager(options.strapiPackageManager || configStrapi?.packageManager || "npm"),
+                  install: options.strapiInstall !== false && configStrapi?.install !== false,
+                  run: false,
+                  gitInit: false,
+                  typescript: true
+                }
               });
             } catch (error) {
               console.error(pc.red("\n❌ Strapi setup failed"));
@@ -250,6 +346,75 @@ program
   });
 
 program
+  .command("analyze")
+  .description("Analyze a Webflow export and preview pages, assets, and component candidates")
+  .argument("<input>", "Path to Webflow export directory")
+  .option("--config <path>", "Path to see-ms config file")
+  .action(async (input, options) => {
+    try {
+      const config = options.config ? await loadSeeMSConfig(options.config) : {};
+      const analysis = await analyzeWebflowExport(input, normalizeConfig(config));
+      const report: ConversionReport = {
+        generatedAt: new Date().toISOString(),
+        stages: ["scan", "analyze", "plan"],
+        pages: analysis.pages.map(page => ({
+          source: page.sourcePath,
+          pageId: page.pageId,
+          route: page.route,
+          output: page.outputPath
+        })),
+        assets: {
+          css: analysis.assets.css.length,
+          images: analysis.assets.images.length,
+          fonts: analysis.assets.fonts.length,
+          js: analysis.assets.js.length,
+          preservedStructure: true
+        },
+        components: analysis.componentCandidates,
+        cms: {
+          provider: config.cms?.provider || "strapi",
+          fields: 0,
+          collections: 0,
+          schemas: 0,
+          seedPages: 0
+        },
+        warnings: analysis.warnings
+      };
+      console.log(renderReportMarkdown(report));
+    } catch (error) {
+      console.error(pc.red("\nAnalysis failed:"));
+      console.error(pc.red(error instanceof Error ? error.message : String(error)));
+      process.exit(1);
+    }
+  });
+
+program
+  .command("scaffold-strapi")
+  .description("Scaffold a new Strapi project for a converted SeeMS site")
+  .argument("<strapi-dir>", "Path where the new Strapi project should be created")
+  .option("--package-manager <manager>", "Package manager (npm|pnpm|yarn)", "npm")
+  .option("--no-install", "Create project files without installing dependencies")
+  .option("--run", "Start Strapi after scaffolding")
+  .option("--git-init", "Initialize a git repository for the Strapi project")
+  .option("--javascript", "Use JavaScript instead of TypeScript")
+  .action(async (strapiDir, options) => {
+    try {
+      await scaffoldStrapiProject({
+        strapiDir,
+        packageManager: toPackageManager(options.packageManager),
+        install: options.install !== false,
+        run: Boolean(options.run),
+        gitInit: Boolean(options.gitInit),
+        typescript: !options.javascript
+      });
+    } catch (error) {
+      console.error(pc.red("Strapi scaffold failed"));
+      console.error(error);
+      process.exit(1);
+    }
+  });
+
+program
   .command("setup-strapi")
   .description("Setup Strapi with schemas and seed data")
   .argument("<project-dir>", "Path to converted project directory")
@@ -257,6 +422,9 @@ program
   .option("--url <url>", "Strapi URL", "http://localhost:1337")
   .option("--token <token>", "Strapi API token (optional)")
   .option("--new-token", "Ignore saved token and prompt for a new one")
+  .option("--scaffold", "Create the Strapi project if the target directory does not exist")
+  .option("--package-manager <manager>", "Package manager for scaffolding (npm|pnpm|yarn)", "npm")
+  .option("--no-install", "Scaffold without installing dependencies")
   .action(async (projectDir, strapiDir, options) => {
     try {
       await completeSetup({
@@ -264,7 +432,16 @@ program
         strapiDir,
         strapiUrl: options.url,
         apiToken: options.token,
-        ignoreSavedToken: options.newToken
+        ignoreSavedToken: options.newToken,
+        scaffold: Boolean(options.scaffold),
+        scaffoldOptions: {
+          strapiDir,
+          packageManager: toPackageManager(options.packageManager),
+          install: options.install !== false,
+          run: false,
+          gitInit: false,
+          typescript: true
+        }
       });
     } catch (error) {
       console.error(pc.red("Strapi setup failed"));

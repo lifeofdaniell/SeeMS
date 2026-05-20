@@ -8,14 +8,17 @@ import type { CheerioAPI, Cheerio } from "cheerio";
 import * as crypto from "crypto";
 import fs from "fs-extra";
 import path from "path";
+import { glob } from "glob";
 import type { SharedComponent } from "@see-ms/types";
+import { htmlPathToPageId } from "./routes";
 
 /**
  * Parsed page with its HTML content
  */
-interface ParsedPage {
+export interface ParsedPage {
   name: string;
   filePath: string;
+  sourcePath: string;
   $: CheerioAPI;
   sections: SectionInfo[];
 }
@@ -23,7 +26,7 @@ interface ParsedPage {
 /**
  * Information about a section in a page
  */
-interface SectionInfo {
+export interface SectionInfo {
   /** CSS selector for the section */
   selector: string;
   /** Structural fingerprint (hash of DOM structure) */
@@ -39,12 +42,14 @@ interface SectionInfo {
 /**
  * Extracted component ready to be written
  */
-interface ExtractedComponent {
+export interface ExtractedComponent {
   name: string;
   selector: string;
   pages: string[];
   html: string;
   fingerprint: string;
+  confidence: "high" | "medium" | "low";
+  reason: string;
 }
 
 /**
@@ -61,14 +66,24 @@ const COMPONENT_NAME_PATTERNS: Record<string, RegExp[]> = {
  * Minimum HTML length for a section to be considered for extraction
  * Prevents extracting tiny elements like single icons or spacers
  */
-const MIN_SECTION_SIZE = 200;
+const DEFAULT_MIN_SECTION_SIZE = 200;
+
+export interface ComponentExtractionOptions {
+  minOccurrences?: number;
+  minSectionSize?: number;
+  include?: string[];
+  exclude?: string[];
+}
 
 /**
  * Parse all HTML files in a directory
  */
-export async function parseAllPages(inputDir: string): Promise<ParsedPage[]> {
+export async function parseAllPages(
+  inputDir: string,
+  options: Pick<ComponentExtractionOptions, "minSectionSize"> = {}
+): Promise<ParsedPage[]> {
   const pages: ParsedPage[] = [];
-  const htmlFiles = await fs.readdir(inputDir);
+  const htmlFiles = await glob("**/*.html", { cwd: inputDir, nodir: true });
 
   for (const file of htmlFiles) {
     if (!file.endsWith(".html")) continue;
@@ -77,12 +92,13 @@ export async function parseAllPages(inputDir: string): Promise<ParsedPage[]> {
     const html = await fs.readFile(filePath, "utf-8");
     const $ = cheerio.load(html);
 
-    const pageName = path.basename(file, ".html");
-    const sections = extractSections($);
+    const pageName = htmlPathToPageId(file);
+    const sections = extractSections($, options.minSectionSize ?? DEFAULT_MIN_SECTION_SIZE);
 
     pages.push({
       name: pageName,
       filePath,
+      sourcePath: file,
       $,
       sections
     });
@@ -95,7 +111,7 @@ export async function parseAllPages(inputDir: string): Promise<ParsedPage[]> {
  * Extract top-level sections from a page
  * Gets all direct children of body (or main wrapper) regardless of tag/class
  */
-function extractSections($: CheerioAPI): SectionInfo[] {
+function extractSections($: CheerioAPI, minSectionSize: number): SectionInfo[] {
   const sections: SectionInfo[] = [];
   const seen = new Set<string>();
 
@@ -136,11 +152,13 @@ function extractSections($: CheerioAPI): SectionInfo[] {
     if (seen.has(elementId)) return;
     seen.add(elementId);
 
-    // Skip very small sections (likely not reusable components)
-    if (html.length < MIN_SECTION_SIZE) return;
-
     const fingerprint = createFingerprint($, $element);
     const suggestedName = suggestComponentName($element);
+    const semanticName = ["TheNav", "TheFooter", "TheHeader", "TheSidebar", "Nav", "Footer", "Header", "Sidebar"].includes(suggestedName);
+
+    // Skip very small sections unless they are semantic site chrome
+    if (!semanticName && html.length < minSectionSize) return;
+
     const uniqueSelector = buildUniqueSelector($, $element);
 
     sections.push({
@@ -338,7 +356,10 @@ function buildUniqueSelector($: CheerioAPI, $element: Cheerio<any>): string {
 /**
  * Find shared sections across pages (appear in 2+ pages with similar structure)
  */
-export function findSharedSections(pages: ParsedPage[]): ExtractedComponent[] {
+export function findSharedSections(
+  pages: ParsedPage[],
+  options: Pick<ComponentExtractionOptions, "minOccurrences" | "include" | "exclude"> = {}
+): ExtractedComponent[] {
   // Group sections by fingerprint
   const fingerprintMap = new Map<string, { section: SectionInfo; page: ParsedPage }[]>();
 
@@ -357,29 +378,48 @@ export function findSharedSections(pages: ParsedPage[]): ExtractedComponent[] {
   for (const [fingerprint, occurrences] of fingerprintMap.entries()) {
     // Must appear in at least 2 different pages
     const uniquePages = new Set(occurrences.map((o) => o.page.name));
-    if (uniquePages.size < 2) continue;
+    if (uniquePages.size < (options.minOccurrences ?? 2)) continue;
 
     // Use the first occurrence as the template
     const template = occurrences[0];
 
     // Generate unique component name
     let name = template.section.suggestedName;
+    if (options.include?.length && !options.include.some((item) => name.toLowerCase().includes(item.toLowerCase()))) {
+      const semanticNames = ["TheNav", "TheFooter", "TheHeader", "TheSidebar", "Nav", "Footer", "Header", "Sidebar"];
+      if (!semanticNames.includes(name)) continue;
+    }
+    if (options.exclude?.some((item) => name.toLowerCase().includes(item.toLowerCase()))) continue;
+
     let counter = 1;
     while (usedNames.has(name)) {
       name = `${template.section.suggestedName}${counter++}`;
     }
     usedNames.add(name);
 
+    const confidence = getComponentConfidence(name, uniquePages.size, pages.length);
+
     sharedComponents.push({
       name,
       selector: template.section.selector,
       pages: [...uniquePages],
       html: template.section.html,
-      fingerprint
+      fingerprint,
+      confidence,
+      reason: confidence === "high"
+        ? "Semantic or repeated site-wide section"
+        : "Repeated section with matching DOM structure"
     });
   }
 
   return sharedComponents;
+}
+
+function getComponentConfidence(name: string, pageCount: number, totalPages: number): "high" | "medium" | "low" {
+  const semanticNames = ["thenav", "thefooter", "theheader", "nav", "footer", "header"];
+  if (semanticNames.includes(name.toLowerCase())) return "high";
+  if (pageCount === totalPages || pageCount >= 3) return "medium";
+  return "low";
 }
 
 /**
@@ -460,7 +500,9 @@ export async function writeComponents(
     sharedComponents.push({
       name: component.name,
       selector: component.selector,
-      pages: component.pages
+      pages: component.pages,
+      confidence: component.confidence,
+      reason: component.reason
       // Fields will be detected separately
     });
   }
@@ -473,10 +515,11 @@ export async function writeComponents(
  */
 export async function extractSharedComponents(
   inputDir: string,
-  outputDir: string
+  outputDir: string,
+  options: ComponentExtractionOptions = {}
 ): Promise<SharedComponent[]> {
   // Parse all HTML pages
-  const pages = await parseAllPages(inputDir);
+  const pages = await parseAllPages(inputDir, options);
 
   if (pages.length < 2) {
     // Need at least 2 pages to find shared components
@@ -484,14 +527,15 @@ export async function extractSharedComponents(
   }
 
   // Find sections that appear across multiple pages
-  const sharedSections = findSharedSections(pages);
+  const sharedSections = findSharedSections(pages, options);
 
   if (sharedSections.length === 0) {
     return [];
   }
 
   // Write components to disk
-  const components = await writeComponents(outputDir, sharedSections);
+  const componentsToWrite = sharedSections.filter((component) => component.confidence !== "low");
+  const components = await writeComponents(outputDir, componentsToWrite);
 
   return components;
 }

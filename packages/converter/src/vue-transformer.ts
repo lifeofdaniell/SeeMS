@@ -5,7 +5,9 @@
 import * as cheerio from "cheerio";
 import fs from "fs-extra";
 import path from "path";
+import { glob } from "glob";
 import type { CMSManifest, CollectionMapping } from "@see-ms/types";
+import { htmlPathToPageId } from "./routes";
 
 /**
  * Check if element is a safe leaf (no structural children)
@@ -42,11 +44,13 @@ function replaceWithBinding(
   } else if (type === "link") {
     // Link field uses composite {url, text, newTab} object
     // Find the anchor element
-    const $link = $el.is("a") || $el.is("NuxtLink") ? $el : $el.find("a, NuxtLink").first();
+    const $link = $el.is("a") || $el.is("NuxtLink") || $el.is("nuxt-link") ? $el : $el.find("a, NuxtLink, nuxt-link").first();
     if ($link.length) {
-      $link.attr(":href", `content.${fieldName}?.url`);
+      const isNuxtLink = $link.is("NuxtLink") || $link.is("nuxt-link");
+      $link.attr(isNuxtLink ? ":to" : ":href", `content.${fieldName}?.url`);
       $link.attr(":target", `content.${fieldName}?.newTab ? '_blank' : undefined`);
       $link.removeAttr("href");
+      if (isNuxtLink) $link.removeAttr("to");
       $link.removeAttr("target");
       // Only empty if safe (no nested children)
       if (isSafeToEmpty($link)) {
@@ -121,9 +125,10 @@ function transformCollection(
         }
       } else if (isLink) {
         // Link uses composite {url, text, newTab} object
-        const $link = $fieldEl.is("a") || $fieldEl.is("NuxtLink") ? $fieldEl : $fieldEl.find("a, NuxtLink").first();
+        const $link = $fieldEl.is("a") || $fieldEl.is("NuxtLink") || $fieldEl.is("nuxt-link") ? $fieldEl : $fieldEl.find("a, NuxtLink, nuxt-link").first();
         if ($link.length) {
-          $link.attr(":href", `item.${fieldName}?.url`);
+          const isNuxtLink = $link.is("NuxtLink") || $link.is("nuxt-link");
+          $link.attr(isNuxtLink ? ":to" : ":href", `item.${fieldName}?.url`);
           $link.attr(":target", `item.${fieldName}?.newTab ? '_blank' : undefined`);
           $link.removeAttr("href");
           $link.removeAttr("target");
@@ -240,11 +245,11 @@ export async function transformAllVuePages(
   pagesDir: string,
   manifest: CMSManifest
 ): Promise<void> {
-  const vueFiles = await fs.readdir(pagesDir);
+  const vueFiles = await glob("**/*.vue", { cwd: pagesDir, nodir: true });
 
   for (const file of vueFiles) {
     if (file.endsWith(".vue")) {
-      const pageName = file.replace(".vue", "");
+      const pageName = htmlPathToPageId(file.replace(/\.vue$/i, ".html"));
       const vueFilePath = path.join(pagesDir, file);
       await transformVueToReactive(vueFilePath, pageName, manifest);
     }

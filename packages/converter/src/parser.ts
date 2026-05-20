@@ -24,37 +24,40 @@ export interface ParsedPage {
  * - ../index.html -> /
  * - press-release/article.html -> /press-release/article
  */
-function normalizeRoute(href: string): string {
+function normalizeRoute(href: string, currentFile?: string): string {
+  const [pathPart, suffix = ""] = href.split(/(?=[?#])/);
   // Remove .html extension
-  let route = href.replace(".html", "");
+  let route = pathPart.replace(/\.html$/i, "");
 
   // Handle various index patterns
   if (route === "index" || route === "/index" || route.endsWith("/index")) {
-    return "/";
+    const parent = route.replace(/(^|\/)index$/, "");
+    return `${parent ? (parent.startsWith("/") ? parent : `/${parent}`) : "/"}${suffix}`;
   }
 
   // Handle parent directory references
   if (route === ".." || route === "../" || route === "/.." || route === "../index") {
-    return "/";
+    return `/${suffix}`;
   }
 
-  // Remove all relative path indicators
-  route = route.replace(/\.\.\//g, "").replace(/\.\//g, "");
+  if (currentFile && !route.startsWith("/")) {
+    route = path.posix.join(path.posix.dirname(currentFile.replace(/\\/g, "/")), route);
+  }
 
   // Normalize the path
   const normalized = path.posix.normalize(route);
 
   // Ensure it starts with /
   if (!normalized.startsWith("/")) {
-    return "/" + normalized;
+    return `/${normalized}${suffix}`;
   }
 
   // If it became just '.' after normalization, return '/'
   if (normalized === "." || normalized === "") {
-    return "/";
+    return `/${suffix}`;
   }
 
-  return normalized;
+  return `${normalized}${suffix}`;
 }
 
 /**
@@ -164,7 +167,7 @@ export function parseHTML(html: string, fileName: string): ParsedPage {
  * - Remove any remaining html/head/body tags
  * - Remove srcset and sizes attributes from images
  */
-export function transformForNuxt(html: string): string {
+export function transformForNuxt(html: string, currentFile?: string): string {
   const $ = cheerio.load(html);
 
   // Remove any html, head, body tags that might have leaked through
@@ -192,16 +195,17 @@ export function transformForNuxt(html: string): string {
 
     if (!isExternal) {
       // Normalize the route
-      const route = normalizeRoute(href);
-
-      $el.attr("to", route);
-      $el.removeAttr("href");
-
-      // Change tag name to NuxtLink
+      const route = normalizeRoute(href, currentFile);
       const content = $el.html();
-      const classes = $el.attr("class") || "";
+      const attrs = { ...$el.attr() };
+      delete attrs.href;
+      attrs.to = route;
 
-      $el.replaceWith(`<nuxt-link to="${route}" class="${classes}">${content}</nuxt-link>`);
+      const attrString = Object.entries(attrs)
+        .map(([name, value]) => `${name}="${escapeAttribute(value ?? "")}"`)
+        .join(" ");
+
+      $el.replaceWith(`<nuxt-link ${attrString}>${content}</nuxt-link>`);
     }
   });
 
@@ -225,6 +229,14 @@ export function transformForNuxt(html: string): string {
   // They will be handled by the webflow-assets.ts Vite plugin
 
   return $.html();
+}
+
+function escapeAttribute(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 /**

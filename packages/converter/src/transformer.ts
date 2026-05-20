@@ -50,6 +50,7 @@ function mapFieldTypeToStrapi(fieldType: string): { type: string; isComponent?: 
         rich: 'richtext',
         html: 'richtext',
         image: 'media',
+        icon: 'media',
         email: 'email',
         phone: 'string',
     };

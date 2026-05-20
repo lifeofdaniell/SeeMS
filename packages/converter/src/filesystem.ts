@@ -31,11 +31,11 @@ export async function scanAssets(webflowDir: string): Promise<AssetPaths> {
   assets.css = cssFiles;
 
   // Find images
-  const imageFiles = await glob('images/**/*', { cwd: webflowDir });
+  const imageFiles = await glob('images/**/*', { cwd: webflowDir, nodir: true });
   assets.images = imageFiles;
 
   // Find fonts
-  const fontFiles = await glob('fonts/**/*', { cwd: webflowDir });
+  const fontFiles = await glob('fonts/**/*', { cwd: webflowDir, nodir: true });
   assets.fonts = fontFiles;
 
   // Find JS files
@@ -58,7 +58,9 @@ export async function copyCSSFiles(
 
   for (const file of cssFiles) {
     const source = path.join(webflowDir, file);
-    const target = path.join(targetDir, path.basename(file));
+    const relative = path.relative('css', file);
+    const target = path.join(targetDir, relative);
+    await fs.ensureDir(path.dirname(target));
     await fs.copy(source, target);
   }
 }
@@ -76,7 +78,9 @@ export async function copyImages(
 
   for (const file of imageFiles) {
     const source = path.join(webflowDir, file);
-    const target = path.join(targetDir, path.basename(file));
+    const relative = path.relative('images', file);
+    const target = path.join(targetDir, relative);
+    await fs.ensureDir(path.dirname(target));
     await fs.copy(source, target);
   }
 }
@@ -94,7 +98,9 @@ export async function copyFonts(
 
   for (const file of fontFiles) {
     const source = path.join(webflowDir, file);
-    const target = path.join(targetDir, path.basename(file));
+    const relative = path.relative('fonts', file);
+    const target = path.join(targetDir, relative);
+    await fs.ensureDir(path.dirname(target));
     await fs.copy(source, target);
   }
 }
@@ -112,7 +118,9 @@ export async function copyJSFiles(
 
   for (const file of jsFiles) {
     const source = path.join(webflowDir, file);
-    const target = path.join(targetDir, path.basename(file));
+    const relative = path.relative('js', file);
+    const target = path.join(targetDir, relative);
+    await fs.ensureDir(path.dirname(target));
     await fs.copy(source, target);
   }
 }
@@ -136,7 +144,7 @@ export async function copyAllAssets(
  */
 export async function findHTMLFiles(webflowDir: string): Promise<string[]> {
   // Find all HTML files recursively
-  const htmlFiles = await glob('**/*.html', { cwd: webflowDir });
+  const htmlFiles = await glob('**/*.html', { cwd: webflowDir, nodir: true });
   return htmlFiles;
 }
 
@@ -180,10 +188,10 @@ export async function formatVueFiles(outputDir: string): Promise<void> {
     console.log(pc.blue('\n✨ Formatting Vue files with Prettier...'));
     
     // Check if prettier is available
-    execSync('npx prettier --version', { stdio: 'ignore' });
+    execSync('prettier --version', { stdio: 'ignore' });
     
     // Format all Vue files in pages directory
-    execSync(`npx prettier --write "${pagesDir}/**/*.vue"`, { 
+    execSync(`prettier --write "${pagesDir}/**/*.vue"`, { 
       cwd: outputDir,
       stdio: 'inherit' 
     });

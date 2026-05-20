@@ -6,7 +6,9 @@
 import * as cheerio from 'cheerio';
 import fs from 'fs-extra';
 import path from 'path';
+import { glob } from 'glob';
 import type { FieldMapping, CollectionMapping, DataCMSAttributes, FieldType } from '@see-ms/types';
+import { htmlPathToPageId } from './routes';
 
 /**
  * Text element selectors for universal detection
@@ -45,6 +47,10 @@ export interface DetectionOptions {
     collectionMin?: number;
     /** Enable universal detection (default: true) */
     universalDetection?: boolean;
+    /** Selectors to ignore */
+    ignoreSelectors?: string[];
+    /** Classes to ignore */
+    ignoreClasses?: string[];
 }
 
 /**
@@ -134,14 +140,18 @@ function isDecorativeImage(_$: cheerio.CheerioAPI, $img: cheerio.Cheerio<any>): 
  */
 function isInsideButton($: cheerio.CheerioAPI, el: any): boolean {
     const $el = $(el);
-    const $button = $el.closest('button, a, NuxtLink, .c_button, .c_icon_button');
+    const $button = $el.closest('button, a, NuxtLink, nuxt-link, .c_button, .c_icon_button');
     return $button.length > 0;
 }
 
 /**
  * Check if element should be ignored based on patterns
  */
-function shouldIgnoreElement(_$: cheerio.CheerioAPI, $el: cheerio.Cheerio<any>): boolean {
+function shouldIgnoreElement(
+    _$: cheerio.CheerioAPI,
+    $el: cheerio.Cheerio<any>,
+    options: DetectionOptions = {}
+): boolean {
     // Check data-cms-ignore attribute
     if ($el.attr('data-cms-ignore') !== undefined) return true;
 
@@ -151,8 +161,16 @@ function shouldIgnoreElement(_$: cheerio.CheerioAPI, $el: cheerio.Cheerio<any>):
         if ($el.closest(pattern).length > 0) return true;
     }
 
+    for (const selector of options.ignoreSelectors || []) {
+        if ($el.is(selector)) return true;
+        if ($el.closest(selector).length > 0) return true;
+    }
+
     // Check for decorative class patterns
     const className = $el.attr('class') || '';
+    for (const ignoredClass of options.ignoreClasses || []) {
+        if (className.split(/\s+/).includes(ignoredClass)) return true;
+    }
     for (const pattern of DECORATIVE_CLASS_PATTERNS) {
         if (className.toLowerCase().includes(pattern)) return true;
     }
@@ -353,7 +371,7 @@ function determineFieldType($el: cheerio.Cheerio<any>, tagName: string): FieldTy
     }
 
     // Links
-    if (tagName === 'a' || $el.is('NuxtLink')) {
+    if (tagName === 'a' || tagName === 'nuxt-link' || $el.is('NuxtLink')) {
         return 'link';
     }
 
@@ -411,7 +429,7 @@ export function detectEditableFields(
     // ========================================
     $('[data-cms]').each((_, el) => {
         const $el = $(el);
-        if (shouldIgnoreElement($, $el)) return;
+        if (shouldIgnoreElement($, $el, options)) return;
 
         const fieldName = $el.attr('data-cms')!.replace(/-/g, '_');
         const tagName = ($el.prop('tagName') || 'div').toLowerCase();
@@ -524,7 +542,7 @@ export function detectEditableFields(
             });
 
             // Links
-            $first.find('a, NuxtLink').not('.c_button, .c_icon_button').first().each((_, el) => {
+            $first.find('a, NuxtLink, nuxt-link').not('.c_button, .c_icon_button').first().each((_, el) => {
                 const $link = $(el);
                 const linkText = $link.text().trim();
                 if (linkText) {
@@ -566,11 +584,11 @@ export function detectEditableFields(
             const $el = $(el);
 
             // Skip ignored elements
-            if (shouldIgnoreElement($, $el)) return;
+            if (shouldIgnoreElement($, $el, options)) return;
 
             // Skip anchors - they're handled by link detection
             const tagName = ($el.prop('tagName') || 'div').toLowerCase();
-            if (tagName === 'a' || $el.is('NuxtLink')) return;
+            if (tagName === 'a' || tagName === 'nuxt-link' || $el.is('NuxtLink')) return;
 
             // Skip elements inside links/buttons (will be handled with link detection)
             if (isInsideButton($, el)) return;
@@ -601,7 +619,7 @@ export function detectEditableFields(
             const $el = $(el);
 
             // Skip ignored elements
-            if (shouldIgnoreElement($, $el)) return;
+            if (shouldIgnoreElement($, $el, options)) return;
 
             // Skip decorative images (icons, arrows, etc.)
             if (isDecorativeImage($, $el)) return;
@@ -621,14 +639,14 @@ export function detectEditableFields(
         });
 
         // 2c. Detect ALL links (as composite fields with URL + text, or href-only for image links)
-        $body.find('a, NuxtLink').each((_, el) => {
+        $body.find('a, NuxtLink, nuxt-link').each((_, el) => {
             if (collectionElements.has(el)) return;
             if (processedElements.has(el)) return;
 
             const $el = $(el);
 
             // Skip ignored elements
-            if (shouldIgnoreElement($, $el)) return;
+            if (shouldIgnoreElement($, $el, options)) return;
 
             // Check if this is a link wrapping only an image
             const hasOnlyImage = $el.children().length === 1 && $el.find('img').length === 1;
@@ -659,7 +677,7 @@ export function detectEditableFields(
             const $el = $(el);
 
             // Skip ignored elements
-            if (shouldIgnoreElement($, $el)) return;
+            if (shouldIgnoreElement($, $el, options)) return;
 
             // Get direct text content
             const text = $el.clone().children().remove().end().text().trim();
@@ -697,7 +715,7 @@ export async function analyzeVuePages(
 }>> {
     const results: Record<string, any> = {};
 
-    const vueFiles = await fs.readdir(pagesDir);
+    const vueFiles = await glob('**/*.vue', { cwd: pagesDir, nodir: true });
 
     for (const file of vueFiles) {
         if (file.endsWith('.vue')) {
@@ -706,7 +724,7 @@ export async function analyzeVuePages(
             const template = extractTemplateFromVue(content);
 
             if (template) {
-                const pageName = file.replace('.vue', '');
+                const pageName = htmlPathToPageId(file.replace(/\.vue$/i, '.html'));
                 results[pageName] = detectEditableFields(template, options);
             }
         }

@@ -32,17 +32,23 @@ export function initEditor(config: EnhancedEditorConfig): EditorInstance {
       const fields = config.manifestLoader.getEditableFields(currentPage);
 
       Object.entries(fields).forEach(([fieldName, field]) => {
-        const elements = document.querySelectorAll(field.selector);
+        let elements: NodeListOf<Element>;
+        try {
+          elements = document.querySelectorAll(field.selector);
+        } catch (error) {
+          console.warn(`[CMS Editor] Invalid selector for field "${fieldName}": ${field.selector}`, error);
+          return;
+        }
 
         elements.forEach(el => {
           const element = el as HTMLElement;
 
-          // Skip elements inside buttons or nav (unless it's a link field)
-          if (field.type !== 'link' && element.closest("button, nav, footer")) return;
+          // Skip button chrome unless it is explicitly mapped as editable.
+          if (field.type !== 'link' && element.closest("button") && !element.hasAttribute("data-cms-editable")) return;
 
           // Determine field type
           let fieldType: string;
-          if (element.tagName === "IMG") {
+          if (element.tagName === "IMG" || field.type === "icon") {
             fieldType = "image";
           } else if (field.type === "link" || element.tagName === "A") {
             fieldType = "link";
@@ -61,9 +67,11 @@ export function initEditor(config: EnhancedEditorConfig): EditorInstance {
           if (fieldType === "image") {
             originalValue = (element as HTMLImageElement).src;
           } else if (fieldType === "link") {
-            const linkEl = element.tagName === "A" ? element as HTMLAnchorElement : element.querySelector("a");
+            const linkEl = element.tagName === "A" || element.tagName.toLowerCase() === "nuxt-link"
+              ? element as HTMLAnchorElement
+              : element.querySelector("a, nuxt-link");
             originalValue = {
-              url: linkEl?.getAttribute("href") || "",
+              url: linkEl?.getAttribute("href") || linkEl?.getAttribute("to") || "",
               text: linkEl?.textContent?.trim() || "",
               newTab: linkEl?.getAttribute("target") === "_blank"
             };
@@ -171,6 +179,11 @@ export function initEditor(config: EnhancedEditorConfig): EditorInstance {
   function startTextEdit(element: HTMLElement, data: EditableElement): void {
     activeEditor = element;
     element.contentEditable = "true";
+    element.style.outline = "2px solid #3b82f6";
+    element.style.outlineOffset = "2px";
+    if (data.fieldType === "rich") {
+      showRichTextMiniToolbar(element);
+    }
     element.focus();
 
     // Select all text
@@ -183,7 +196,9 @@ export function initEditor(config: EnhancedEditorConfig): EditorInstance {
     // Handle blur (save)
     const handleBlur = () => {
       element.contentEditable = "false";
-      data.currentValue = element.textContent || "";
+      element.style.outline = "";
+      element.style.outlineOffset = "";
+      data.currentValue = data.fieldType === "rich" ? element.innerHTML : element.textContent || "";
       data.isDirty = data.currentValue !== data.originalValue;
       activeEditor = null;
       element.removeEventListener("blur", handleBlur);
@@ -317,15 +332,19 @@ export function initEditor(config: EnhancedEditorConfig): EditorInstance {
       };
 
       // Update element
-      const linkEl = element.tagName === "A"
+      const linkEl = element.tagName === "A" || element.tagName.toLowerCase() === "nuxt-link"
         ? element as HTMLAnchorElement
-        : element.querySelector("a");
+        : element.querySelector("a, nuxt-link");
 
       if (linkEl) {
-        linkEl.href = newValue.url;
+        if (linkEl.tagName.toLowerCase() === "nuxt-link") {
+          linkEl.setAttribute("to", newValue.url);
+        } else {
+          (linkEl as HTMLAnchorElement).href = newValue.url;
+        }
         linkEl.textContent = newValue.text;
         if (newValue.newTab) {
-          linkEl.target = "_blank";
+          (linkEl as HTMLElement).setAttribute("target", "_blank");
         } else {
           linkEl.removeAttribute("target");
         }
@@ -425,35 +444,79 @@ export function initEditor(config: EnhancedEditorConfig): EditorInstance {
    * Start editing image
    */
   function startImageEdit(element: HTMLElement, data: EditableElement): void {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "image/*";
+    const currentValue = data.currentValue as string;
+    const newSrc = window.prompt("Image or icon URL/path", currentValue);
+    if (!newSrc || newSrc === currentValue) return;
 
-    input.onchange = async (e) => {
-      const file = (e.target as HTMLInputElement).files?.[0];
-      if (!file) return;
+    const img = element.tagName === "IMG"
+      ? element as HTMLImageElement
+      : element.querySelector("img") as HTMLImageElement | null;
 
-      // Create preview
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const img = element as HTMLImageElement;
-        const newSrc = event.target?.result as string;
-        img.src = newSrc;
-        data.currentValue = newSrc;
-        data.isDirty = true;
+    if (img) {
+      img.src = newSrc;
+    }
 
-        // Update reactive state immediately
-        updateReactiveState(data.fieldName, newSrc);
+    data.currentValue = newSrc;
+    data.isDirty = true;
+    updateReactiveState(data.fieldName, newSrc);
 
-        // Save to draft
-        if (config.draftStorage && currentPage) {
-          saveToDraft(data.fieldName, newSrc);
-        }
-      };
-      reader.readAsDataURL(file);
-    };
+    if (config.draftStorage && currentPage) {
+      saveToDraft(data.fieldName, newSrc);
+    }
+  }
 
-    input.click();
+  function showRichTextMiniToolbar(element: HTMLElement): void {
+    const existing = document.getElementById("cms-richtext-toolbar");
+    existing?.remove();
+
+    const toolbar = document.createElement("div");
+    toolbar.id = "cms-richtext-toolbar";
+    toolbar.style.cssText = `
+      position: fixed;
+      top: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 100002;
+      display: flex;
+      gap: 6px;
+      padding: 8px;
+      border-radius: 8px;
+      background: #111827;
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.22);
+      font-family: system-ui, -apple-system, sans-serif;
+    `;
+
+    const commands = [
+      { label: "B", command: "bold" },
+      { label: "I", command: "italic" },
+      { label: "UL", command: "insertUnorderedList" },
+      { label: "OL", command: "insertOrderedList" }
+    ];
+
+    commands.forEach(({ label, command }) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = label;
+      button.style.cssText = `
+        min-width: 32px;
+        height: 30px;
+        border: 0;
+        border-radius: 6px;
+        background: #f9fafb;
+        color: #111827;
+        font-weight: 700;
+        cursor: pointer;
+      `;
+      button.addEventListener("mousedown", (event) => {
+        event.preventDefault();
+        document.execCommand(command);
+        element.focus();
+      });
+      toolbar.appendChild(button);
+    });
+
+    document.body.appendChild(toolbar);
+    element.addEventListener("blur", () => toolbar.remove(), { once: true });
   }
 
   /**
@@ -587,14 +650,18 @@ export function initEditor(config: EnhancedEditorConfig): EditorInstance {
           (data.element as HTMLImageElement).src = data.originalValue as string;
         } else if (data.fieldType === "link") {
           const originalLink = data.originalValue as LinkFieldValue;
-          const linkEl = data.element.tagName === "A"
+          const linkEl = data.element.tagName === "A" || data.element.tagName.toLowerCase() === "nuxt-link"
             ? data.element as HTMLAnchorElement
-            : data.element.querySelector("a");
+            : data.element.querySelector("a, nuxt-link");
           if (linkEl) {
-            linkEl.href = originalLink.url;
+            if (linkEl.tagName.toLowerCase() === "nuxt-link") {
+              linkEl.setAttribute("to", originalLink.url);
+            } else {
+              (linkEl as HTMLAnchorElement).href = originalLink.url;
+            }
             linkEl.textContent = originalLink.text;
             if (originalLink.newTab) {
-              linkEl.target = "_blank";
+              (linkEl as HTMLElement).setAttribute("target", "_blank");
             } else {
               linkEl.removeAttribute("target");
             }
@@ -614,8 +681,9 @@ export function initEditor(config: EnhancedEditorConfig): EditorInstance {
    * Switch to a different page
    */
   async function setPage(pageName: string): Promise<void> {
+    const wasEnabled = isEnabled;
     // Disable current page
-    if (isEnabled) {
+    if (wasEnabled) {
       disable();
     }
 
@@ -623,7 +691,7 @@ export function initEditor(config: EnhancedEditorConfig): EditorInstance {
     currentPage = pageName;
 
     // Re-enable with new page
-    if (isEnabled) {
+    if (wasEnabled) {
       await enable();
     }
   }

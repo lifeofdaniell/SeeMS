@@ -1,308 +1,350 @@
 # @see-ms/converter
 
-CLI tool for converting HTML exports to Nuxt 3 projects with automatic CMS integration.
+SeeMS converts Webflow HTML exports into Nuxt 3 projects with a reviewable CMS manifest, Strapi schemas/seed data, and
+an inline editing overlay.
 
-## Features
+The goal is not just HTML-to-Vue syntax. SeeMS tries to preserve the site, explain what it found, componentize obvious
+reusable sections, make content editable, and wire a developer-friendly Strapi workflow.
 
-✨ **Automatic Conversion**
-
-- Convert HTML to Vue components
-- Transform `<a>` tags to `<NuxtLink>` with proper routing
-- Normalize all asset paths automatically
-
-🎨 **Asset Management**
-
-- CSS files → `assets/css/`
-- Images, fonts, JS → `public/assets/`
-- Auto-generate Vite plugin for path resolution (For Webflow)
-
-🔧 **Smart Transforms**
-
-- Extract and deduplicate embedded styles
-- Remove unnecessary attributes (srcset, sizes)
-- Clean up script tags and inline code
-- Format output with Prettier
-
-📦 **Boilerplate Support**
-
-- Clone from GitHub repository
-- Copy from local directory
-- Works with your custom Nuxt boilerplate
-
----
-
-## Installation
-
-### Quick Use (npx - no installation)
+## Quick Start
 
 ```bash
-npx @see-ms/converter convert <webflow-export> <output-dir> [options]
+cms analyze ./webflow-export
+cms convert ./webflow-export ./nuxt-site
 ```
 
-### Global Installation
+Use `--skip-prompts` for repeatable runs:
 
 ```bash
-npm install -g @see-ms/converter
-# or
-pnpm add -g @see-ms/converter
-```
-
-Then use anywhere:
-
-```bash
-cms convert <webflow-export> <output-dir> [options]
-```
-
----
-
-## Usage
-
-### Basic Conversion
-
-```bash
-cms convert ./my-webflow-export ./my-nuxt-site
-```
-
-### With Boilerplate (Recommended)
-
-```bash
-# From GitHub
 cms convert ./webflow-export ./nuxt-site \
-  --boilerplate git@github.com:username/nuxt-boilerplate.git
-
-# From local directory
-cms convert ./webflow-export ./nuxt-site \
-  --boilerplate /path/to/local/boilerplate
+  --config ./see-ms.config.ts \
+  --skip-prompts
 ```
 
-### Full Example
+## Full Step-By-Step Usage
+
+### 1. Build or install the CLI
+
+When working from this monorepo:
 
 ```bash
-cms convert ./project-html ./project-nuxt \
-  --boilerplate git@github.com:username/repo-boilerplate.git \
-  --cms strapi
+pnpm install
+pnpm --filter @see-ms/types build
+pnpm --filter @see-ms/editor-overlay build
+pnpm --filter @see-ms/converter build
 ```
 
----
+Then use:
 
-## Options
+```bash
+node packages/converter/dist/cli.mjs --help
+```
 
-| Option                       | Description                                  | Default |
-|------------------------------|----------------------------------------------|---------|
-| `-b, --boilerplate <source>` | GitHub URL or local path to Nuxt boilerplate | none    |
-| `-o, --overrides <path>`     | Path to overrides JSON file                  | none    |
-| `--generate-schemas`         | Generate CMS schemas after conversion        | false   |
-| `--cms <type>`               | CMS type: strapi, contentful, or sanity      | strapi  |
+If installed globally or through `npx`, use `cms` in place of `node packages/converter/dist/cli.mjs`.
 
----
+### 2. Export your Webflow site
 
-## What Gets Converted
+Your Webflow export should contain HTML plus asset folders:
 
-### HTML → Vue Components
+```text
+webflow-export/
+  index.html
+  about.html
+  products/item.html
+  css/
+  images/
+  fonts/
+  js/
+```
 
-**Before (Webflow):**
+Nested pages are supported.
+
+### 3. Analyze the export
+
+Run analysis before generating anything:
+
+```bash
+cms analyze ./webflow-export
+```
+
+This previews pages, Nuxt routes, assets, shared component candidates, and warnings.
+
+### 4. Convert to Nuxt
+
+Run the interactive converter:
+
+```bash
+cms convert ./webflow-export ./nuxt-site
+```
+
+With a Nuxt boilerplate:
+
+```bash
+cms convert ./webflow-export ./nuxt-site \
+  --boilerplate /path/to/nuxt-boilerplate
+```
+
+The converter writes:
+
+```text
+nuxt-site/
+  pages/
+  components/
+  assets/
+  public/cms-manifest.json
+  cms-schemas/
+  cms-seed/seed-data.json
+  strapi-bootstrap/
+  see-ms.config.ts
+  see-ms-report.md
+  see-ms-report.json
+```
+
+### 5. Review the report and config
+
+Start with:
+
+```text
+nuxt-site/see-ms-report.md
+nuxt-site/see-ms.config.ts
+nuxt-site/public/cms-manifest.json
+```
+
+Use the report to check pages, routes, assets, components, editable fields, collections, schemas, seed data, and
+warnings.
+
+Use `see-ms.config.ts` to make future runs repeatable.
+
+### 6. Repeat conversion without prompts
+
+After reviewing config, rerun non-interactively:
+
+```bash
+cms convert ./webflow-export ./nuxt-site \
+  --config ./nuxt-site/see-ms.config.ts \
+  --skip-prompts
+```
+
+### 7. Create or connect Strapi
+
+If you do not have Strapi yet:
+
+```bash
+cms scaffold-strapi ./strapi-app
+```
+
+Or scaffold it during conversion:
+
+```bash
+cms convert ./webflow-export ./nuxt-site \
+  --scaffold-strapi ./strapi-app
+```
+
+If you already have Strapi:
+
+```bash
+cms setup-strapi ./nuxt-site ./strapi-app
+```
+
+If the target Strapi directory does not exist yet, `setup-strapi` can create it:
+
+```bash
+cms setup-strapi ./nuxt-site ./strapi-app --scaffold
+```
+
+### 8. Run Nuxt and Strapi
+
+In the Nuxt project:
+
+```bash
+cd ./nuxt-site
+pnpm install
+pnpm dev
+```
+
+In the Strapi project:
+
+```bash
+cd ./strapi-app
+npm run develop
+```
+
+Use the package manager you chose when scaffolding Strapi.
+
+### 9. Open the inline editor
+
+Open the Nuxt app normally:
+
+```text
+http://localhost:3000
+```
+
+Open preview/editing mode:
+
+```text
+http://localhost:3000?preview=true
+```
+
+The inline editor reads `public/cms-manifest.json` and lets you edit text, rich text, links, images, and icons, then
+save/publish through Strapi.
+
+### 10. Use the fixture for local testing
+
+From this repo:
+
+```bash
+node packages/converter/dist/cli.mjs analyze packages/converter/fixtures/webflow-basic
+
+node packages/converter/dist/cli.mjs convert \
+  packages/converter/fixtures/webflow-basic \
+  /private/tmp/see-ms-fixture-output \
+  --skip-prompts \
+  --no-editor
+```
+
+## Workflow
+
+1. **Analyze** scans pages, routes, assets, and reusable component candidates.
+2. **Plan** guides you through collections, shared components, seed content, and editor wiring.
+3. **Convert** writes Nuxt pages and preserves nested asset folders.
+4. **CMS** writes `public/cms-manifest.json`, Strapi schemas, and optional seed data.
+5. **Editor** installs the inline editor overlay for `?preview=true`.
+
+Every conversion writes:
+
+- `see-ms.config.ts` for repeatable settings
+- `see-ms-report.md` for a human-readable summary
+- `see-ms-report.json` for automation
+- `public/cms-manifest.json` as the provider-neutral source of truth
+
+## Interactive Conversion
+
+By default, `cms convert` opens a small wizard:
+
+- confirms input, output, boilerplate, and CMS provider
+- previews discovered pages and routes
+- previews shared component candidates
+- asks for collection hints when none exist in config
+- asks whether to generate seed content
+- asks whether to wire the inline editor
+
+The wizard is designed for developers: it explains what the converter sees before it writes the final project.
+
+## Config File
+
+SeeMS writes and reads `see-ms.config.ts`:
+
+```ts
+import type {SeeMSConfig} from "@see-ms/types";
+
+const config: SeeMSConfig = {
+    cms: {provider: "strapi"},
+    collections: [
+        {className: "blog-card", name: "blog_posts"}
+    ],
+    components: {
+        enabled: true,
+        minOccurrences: 2,
+        include: ["nav", "header", "footer"]
+    },
+    ignore: {
+        selectors: [".sr-only"],
+        classes: ["decorative-icon"]
+    },
+    editor: {
+        enabled: true,
+        previewParam: "preview"
+    }
+};
+
+export default config;
+```
+
+CLI flags can override the config for a single run, but config is the durable source of truth.
+
+## Detection Model
+
+SeeMS detects editable fields from generated Vue templates:
+
+- headings, paragraphs, spans, list items, and leaf text nodes
+- rich text when nested formatting is present
+- images and icons as media fields
+- links as `{ url, text, newTab }`
+- collections from `data-cms-collection` or configured classes
+- shared components from repeated nav/header/footer/top-level structures
+
+Use Webflow custom attributes for stronger hints:
 
 ```html
-<!-- index.html -->
-<a href="about.html">About</a>
-<img src="images/logo.svg" srcset="..." sizes="...">
+<h1 data-cms="hero-heading">Solar finance made simple</h1>
+<div data-cms-collection="faq-items">...</div>
+<p data-cms-ignore>Decorative helper text</p>
 ```
 
-**After (Nuxt):**
+## Strapi Setup
 
-```vue
-<!-- pages/index.vue -->
-<script setup lang="ts">
-  // Page: index
-</script>
+For v1, Strapi is the supported CMS provider.
 
-<template>
-  <div class="page-index">
-    <NuxtLink to="/about">About</NuxtLink>
-    <img src="/assets/images/logo.svg">
-  </div>
-</template>
-```
-
-### Asset Structure
-
-```
-webflow-export/              nuxt-project/
-├── css/                  →  ├── assets/css/
-├── images/               →  ├── public/assets/images/
-├── fonts/                →  ├── public/assets/fonts/
-├── js/                   →  ├── public/assets/js/
-└── *.html                →  └── pages/*.vue
-```
-
-### Auto-Generated Files
-
-- ✅ `utils/webflow-assets.ts` - Vite plugin for CSS path resolution on Webflow files
-- ✅ `assets/css/main.css` - Extracted embedded styles
-- ✅ Updated `nuxt.config.ts` with CSS imports
-
----
-
-## Transformations Applied
-
-### Links
-
-- `<a href="about.html">` → `<NuxtLink to="/about">`
-- `<a href="../index.html">` → `<NuxtLink to="/">`
-- `<a href="index.html">` → `<NuxtLink to="/">`
-- External links remain as `<a>` tags
-
-### Images
-
-- `images/logo.svg` → `/assets/images/logo.svg`
-- Removes `srcset` and `sizes` attributes
-- Normalizes relative paths
-
-### Styles
-
-- Extracts `.global-embed` styles (For Webflow)
-- Deduplicates repeated styles
-- Adds to `assets/css/main.css`
-
-### Scripts
-
-- Removes all inline `<script>` tags
-- Cleans up Webflow-specific JavaScript
-
----
-
-## Output Structure
-
-```
-my-nuxt-site/
-├── pages/
-│   ├── index.vue
-│   └── others.cue
-│ 
-├── assets/
-│   └── css/
-│       ├── normalize.css
-│       ├── components.css
-│       ├── webflow.css
-│       └── main.css
-├── public/
-│   └── assets/
-│       ├── images/
-│       ├── fonts/
-│       └── js/
-├── utils/
-│   └── webflow-assets.ts
-└── nuxt.config.ts (updated)
-```
-
----
-
-## After Conversion
-
-1. **Install dependencies:**
+If you do not have a Strapi project yet, scaffold one:
 
 ```bash
-   cd my-nuxt-site
-   pnpm install
+cms scaffold-strapi ./strapi-app
 ```
 
-2. **Start development server:**
+Or do it as part of conversion:
 
 ```bash
-   pnpm dev
+cms convert ./webflow-export ./nuxt-site \
+  --scaffold-strapi ./strapi-app
 ```
 
-3. **Your site should be running!** 🎉
+For repeatable runs, put it in config:
 
----
-
-## Requirements
-
-- Node.js >= 18
-- A Webflow export (HTML, CSS, images, fonts)
-- (Optional) A Nuxt 3 boilerplate
-
----
-
-## Tips
-
-### Using Your Own Boilerplate
-
-If you have a standard Nuxt boilerplate for all projects:
-
-1. Create a GitHub repo with your boilerplate
-2. Use it in every conversion:
-
-```bash
-   cms convert ./webflow ./output --boilerplate git@github.com:you/boilerplate.git
-```
-
-### Webflow Export Tips
-
-- Export from Webflow: **Site Settings → Export Code**
-- Make sure to include all assets
-- Check that images are properly linked
-
-### Handling Custom Code
-
-If your Webflow site has custom JavaScript that you need:
-
-1. The converter removes inline scripts for clean Vue components
-2. Port necessary JavaScript to Vue composables or plugins
-3. Add to your Nuxt `plugins/` or `composables/` folders
-
----
-
-## Troubleshooting
-
-### `nuxt.config.ts not found`
-
-The converter expects a `nuxt.config.ts` file. Either:
-
-- Use a boilerplate that has one, or
-- The converter will create a minimal one if no boilerplate is specified
-
-### Assets not loading
-
-Make sure the `webflow-assets.ts` plugin is imported in your `nuxt.config.ts`:
-
-```typescript
-import webflowAssets from './utils/webflow-assets'
-
-export default defineNuxtConfig({
-    vite: {
-        plugins: [webflowAssets()]
+```ts
+const config: SeeMSConfig = {
+    cms: {
+        provider: "strapi",
+        strapi: {
+            scaffold: true,
+            directory: "./strapi-app",
+            packageManager: "npm",
+            install: true
+        }
     }
-})
+};
 ```
 
-### Routes not working
+Use `--no-strapi-install` if you want SeeMS to create the Strapi files but skip dependency installation.
 
-Check that your `pages/` directory is enabled in Nuxt. It should be automatic, but verify in `nuxt.config.ts`:
+If you already have a Strapi project:
 
-```typescript
-export default defineNuxtConfig({
-    pages: true
-})
+```bash
+cms setup-strapi ./nuxt-site ./strapi-app
+cms generate-schemas ./nuxt-site/public/cms-manifest.json --type strapi
 ```
 
----
+The manifest stays provider-neutral so Contentful and Sanity adapters can be added later without changing the detection
+model.
 
-## Contributing
+## Inline Editor
 
-Issues and pull requests welcome!
+When enabled, SeeMS wires `@see-ms/editor-overlay`.
 
-## License
+Open the generated Nuxt site with:
 
-MIT
+```text
+http://localhost:3000?preview=true
+```
 
----
+The editor reads `cms-manifest.json`, then supports:
 
-## Related Packages
+- click-to-edit text and headings
+- basic rich text controls
+- link text, URL, and new-tab editing
+- image/icon path replacement
+- draft restore/discard
+- save and publish through generated Nuxt API routes
 
-- [@see-ms/types](../types) - Shared TypeScript types
-- [@see-ms/editor-overlay](../editor-overlay) - Inline CMS editor (coming soon)
+## Fixtures And Local Test Projects
 
----
-
-**Made with ❤**
+- `packages/converter/fixtures/webflow-basic` is a small repeatable Webflow-style fixture.

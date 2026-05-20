@@ -5,11 +5,8 @@
 import type { ConversionOptions } from '@see-ms/types';
 import pc from 'picocolors';
 import path from 'path';
-import fs from 'fs-extra';
 import {
-    scanAssets,
     copyAllAssets,
-    findHTMLFiles,
     readHTMLFile,
     writeVueComponent,
     formatVueFiles,
@@ -31,40 +28,48 @@ import { extractAllContent, formatForStrapi } from './content-extractor';
 import { writeSeedData, createSeedReadme } from './seed-writer';
 import { extractSharedComponents, replaceWithComponent, replaceComponentMarkers } from './component-extractor';
 import * as cheerio from 'cheerio';
+import { analyzeWebflowExport, createConversionReport, writeConversionReport } from './analyzer';
+import { loadSeeMSConfig, mergeConfig, normalizeConfig, writeSeeMSConfig } from './config';
+import { getPageRouteInfo, htmlPathToPageId } from './routes';
 
 export async function convertWebflowExport(options: ConversionOptions): Promise<void> {
     const { inputDir, outputDir, boilerplate } = options;
+    const loadedConfig = options.configPath ? await loadSeeMSConfig(options.configPath) : {};
+    const config = normalizeConfig(mergeConfig(loadedConfig, options.config || {}));
+    const provider = options.cmsBackend || config.cms?.provider || 'strapi';
+    const editorEnabled = options.editor ?? config.editor?.enabled ?? true;
+    const shouldGenerateContent = options.generateContent !== false;
+    const collectionClasses = options.collectionClasses || config.collections?.map(collection => collection.className);
+    const collectionNames = options.collectionNames || Object.fromEntries(
+        (config.collections || []).map(collection => [collection.className, collection.name || collection.className])
+    );
 
     console.log(pc.cyan('🚀 Starting Webflow to Nuxt conversion...'));
     console.log(pc.dim(`Input: ${inputDir}`));
     console.log(pc.dim(`Output: ${outputDir}`));
 
     try {
-        // Step 0: Setup boilerplate first
+        // Step 0: Analyze input and setup boilerplate
+        const analysis = await analyzeWebflowExport(inputDir, config);
         await setupBoilerplate(boilerplate, outputDir);
+        await writeSeeMSConfig(outputDir, config);
 
-        // Step 1: Verify input directory exists
-        const inputExists = await fs.pathExists(inputDir);
-        if (!inputExists) {
-            throw new Error(`Input directory not found: ${inputDir}`);
-        }
-
-        // Step 2: Scan for assets
+        // Step 1: Scan for assets
         console.log(pc.blue('\n📂 Scanning assets...'));
-        const assets = await scanAssets(inputDir);
+        const assets = analysis.assets;
         console.log(pc.green(`  ✓ Found ${assets.css.length} CSS files`));
         console.log(pc.green(`  ✓ Found ${assets.images.length} images`));
         console.log(pc.green(`  ✓ Found ${assets.fonts.length} fonts`));
         console.log(pc.green(`  ✓ Found ${assets.js.length} JS files`));
 
-        // Step 3: Copy assets to output
+        // Step 2: Copy assets to output
         console.log(pc.blue('\n📦 Copying assets...'));
         await copyAllAssets(inputDir, outputDir, assets);
         console.log(pc.green('  ✓ Assets copied successfully'));
 
-        // Step 4: Find all HTML files (including in subfolders)
+        // Step 3: Find all HTML files (including in subfolders)
         console.log(pc.blue('\n🔍 Finding HTML files...'));
-        const htmlFiles = await findHTMLFiles(inputDir);
+        const htmlFiles = analysis.pages.map((page) => page.sourcePath);
         console.log(pc.green(`  ✓ Found ${htmlFiles.length} HTML files`));
 
         // Step 5: Read and store HTML content (before converting to Vue)
@@ -73,14 +78,21 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
 
         for (const htmlFile of htmlFiles) {
             const html = await readHTMLFile(inputDir, htmlFile);
-            const pageName = htmlFile.replace('.html', '').replace(/\//g, '-');
+            const pageName = htmlPathToPageId(htmlFile);
             htmlContentMap.set(pageName, html);
             console.log(pc.dim(`  Stored: ${pageName} from ${htmlFile}`));
         }
 
         // Step 5.5: Extract shared components (navbar, footer, etc.)
         console.log(pc.blue('\n🧩 Extracting shared components...'));
-        const sharedComponents = await extractSharedComponents(inputDir, outputDir);
+        const sharedComponents = config.components?.enabled === false
+            ? []
+            : await extractSharedComponents(inputDir, outputDir, {
+                minOccurrences: config.components?.minOccurrences,
+                minSectionSize: config.components?.minSectionSize,
+                include: config.components?.include,
+                exclude: config.components?.exclude,
+            });
 
         // Track which components are used per page
         const pageComponentMap = new Map<string, string[]>();
@@ -123,7 +135,7 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
         let allEmbeddedStyles = '';
 
         for (const htmlFile of htmlFiles) {
-            const pageName = htmlFile.replace('.html', '').replace(/\//g, '-');
+            const pageName = htmlPathToPageId(htmlFile);
             const html = htmlContentMap.get(pageName)!;
             const parsed = parseHTML(html, htmlFile);
 
@@ -133,7 +145,7 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
             }
 
             // Transform HTML for Nuxt
-            const transformed = transformForNuxt(parsed.htmlContent);
+            const transformed = transformForNuxt(parsed.htmlContent, htmlFile);
 
             // Get shared component imports for this page
             const componentImports = pageComponentMap.get(pageName);
@@ -152,9 +164,20 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
         // Step 8: Generate CMS manifest
         console.log(pc.blue('\n🔍 Analyzing pages for CMS fields...'));
         const pagesDir = path.join(outputDir, 'pages');
+        const pageRoutes = Object.fromEntries(
+            htmlFiles.map((htmlFile) => {
+                const info = getPageRouteInfo(htmlFile);
+                return [info.pageId, info.route];
+            })
+        );
         const manifest = await generateManifest(pagesDir, {
-            collectionClasses: options.collectionClasses,
-            collectionNames: options.collectionNames,
+            collectionClasses,
+            collectionNames,
+            sharedComponents,
+            ignoreSelectors: config.ignore?.selectors,
+            ignoreClasses: config.ignore?.classes,
+            provider,
+            pageRoutes,
         });
         await writeManifest(outputDir, manifest);
 
@@ -181,21 +204,29 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
         console.log(pc.dim(`  HTML map has ${htmlContentMap.size} entries`));
         console.log(pc.dim(`  Manifest has ${Object.keys(manifest.pages).length} pages`));
 
-        const extractedContent = extractAllContent(htmlContentMap, manifest);
-        const seedData = formatForStrapi(extractedContent);
+        let seedData: Record<string, any> = {};
+        if (shouldGenerateContent) {
+            const extractedContent = extractAllContent(htmlContentMap, manifest);
+            seedData = formatForStrapi(extractedContent);
 
-        await writeSeedData(outputDir, seedData);
-        await createSeedReadme(outputDir);
+            await writeSeedData(outputDir, seedData);
+            await createSeedReadme(outputDir);
+        }
 
         // Count pages that had content extracted (not boilerplate-only pages)
-        const pagesWithContent = Object.keys(seedData).filter(key => {
+        const pagesWithContent = Object.keys(manifest.pages).filter(key => {
             const data = seedData[key];
+            if (!data) return false;
             if (Array.isArray(data)) return data.length > 0;
             return Object.keys(data).length > 0;
         }).length;
 
-        console.log(pc.green(`  ✓ Extracted content from ${pagesWithContent} pages`));
-        console.log(pc.green(`  ✓ Generated cms-seed/seed-data.json`));
+        if (shouldGenerateContent) {
+            console.log(pc.green(`  ✓ Extracted content from ${pagesWithContent} pages`));
+            console.log(pc.green(`  ✓ Generated cms-seed/seed-data.json`));
+        } else {
+            console.log(pc.dim('  Skipped initial CMS content generation'));
+        }
 
         // Step 10: Generate Strapi schemas
         console.log(pc.blue('\n📋 Generating Strapi schemas...'));
@@ -236,23 +267,41 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
             console.log(pc.dim('    Please add CSS files manually'));
         }
 
-        console.log(pc.blue('\n🎨 Setting up editor overlay...'));
-        await createEditorPlugin(outputDir);
-        await createEditorContentComposable(outputDir);
-        await createStrapiContentComposable(outputDir);
-        await addEditorDependency(outputDir);
-        await createSaveEndpoint(outputDir);
-        await createPublishEndpoint(outputDir);
-        await createStrapiBootstrap(outputDir);
-        await addStrapiUrlToConfig(outputDir);
-        console.log(pc.green('  ✓ Editor plugin created'));
-        console.log(pc.green('  ✓ Editor content composable created'));
-        console.log(pc.green('  ✓ Strapi content composable created'));
-        console.log(pc.green('  ✓ Editor dependency added'));
-        console.log(pc.green('  ✓ Save endpoint created'));
-        console.log(pc.green('  ✓ Publish endpoint created'));
-        console.log(pc.green('  ✓ Strapi bootstrap file generated'));
-        console.log(pc.green('  ✓ Strapi config added'));
+        if (editorEnabled) {
+            console.log(pc.blue('\n🎨 Setting up editor overlay...'));
+            await createEditorPlugin(outputDir);
+            await createEditorContentComposable(outputDir);
+            await createStrapiContentComposable(outputDir);
+            await addEditorDependency(outputDir);
+            await createSaveEndpoint(outputDir);
+            await createPublishEndpoint(outputDir);
+            await createStrapiBootstrap(outputDir);
+            await addStrapiUrlToConfig(outputDir);
+            console.log(pc.green('  ✓ Editor plugin created'));
+            console.log(pc.green('  ✓ Editor content composable created'));
+            console.log(pc.green('  ✓ Strapi content composable created'));
+            console.log(pc.green('  ✓ Editor dependency added'));
+            console.log(pc.green('  ✓ Save endpoint created'));
+            console.log(pc.green('  ✓ Publish endpoint created'));
+            console.log(pc.green('  ✓ Strapi bootstrap file generated'));
+            console.log(pc.green('  ✓ Strapi config added'));
+        } else {
+            console.log(pc.dim('\n🎨 Editor overlay disabled by config'));
+        }
+
+        const report = createConversionReport({
+            analysis,
+            provider,
+            stages: ['scan', 'analyze', 'plan', 'convert', 'cms', ...(editorEnabled ? ['editor' as const] : [])],
+            components: sharedComponents,
+            fields: totalFields,
+            collections: totalCollections,
+            schemas: Object.keys(schemas).length,
+            seedPages: pagesWithContent,
+            warnings: []
+        });
+        await writeConversionReport(outputDir, report);
+        console.log(pc.green('  ✓ Generated see-ms-report.md and see-ms-report.json'));
 
         // Success!
         console.log(pc.green('\n✅ Conversion completed successfully!'));

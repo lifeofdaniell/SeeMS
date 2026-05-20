@@ -29,7 +29,7 @@ export interface CollectionItem {
  * Extract a link as a composite object
  */
 function extractLinkValue($element: cheerio.Cheerio<any>): LinkFieldValue {
-    const href = $element.attr('href') || '';
+    const href = $element.attr('href') || $element.attr('to') || '';
     const text = $element.text().trim();
     const target = $element.attr('target');
     const newTab = target === '_blank';
@@ -69,9 +69,9 @@ export function extractContentFromHTML(
                     content.fields[fieldName] = src;
                 } else if (field.type === 'link') {
                     // Extract link as composite object
-                    const linkElement = element.is('a') || element.is('NuxtLink')
+                    const linkElement = element.is('a') || element.is('NuxtLink') || element.is('nuxt-link')
                         ? element
-                        : element.find('a, NuxtLink').first();
+                        : element.find('a, NuxtLink, nuxt-link').first();
                     if (linkElement.length > 0) {
                         content.fields[fieldName] = extractLinkValue(linkElement);
                     }
@@ -111,9 +111,9 @@ export function extractContentFromHTML(
                             item[fieldName] = src;
                         } else if (fieldType === 'link' || fieldName === 'link' || fieldName === 'url') {
                             // Extract link as composite object
-                            const linkElement = fieldElement.is('a') || fieldElement.is('NuxtLink')
+                            const linkElement = fieldElement.is('a') || fieldElement.is('NuxtLink') || fieldElement.is('nuxt-link')
                                 ? fieldElement
-                                : fieldElement.find('a, NuxtLink').first();
+                                : fieldElement.find('a, NuxtLink, nuxt-link').first();
                             if (linkElement.length > 0) {
                                 item[fieldName] = extractLinkValue(linkElement);
                             }

@@ -7,6 +7,7 @@ import fs from "fs-extra";
 import path from "path";
 import { glob } from "glob";
 import * as readline from "readline";
+import { spawn } from "child_process";
 
 // @ts-ignore
 interface SchemaFile {
@@ -21,6 +22,17 @@ interface SetupOptions {
   strapiUrl?: string;
   apiToken?: string;
   ignoreSavedToken?: boolean;
+  scaffold?: boolean;
+  scaffoldOptions?: StrapiScaffoldOptions;
+}
+
+export interface StrapiScaffoldOptions {
+  strapiDir: string;
+  packageManager?: "npm" | "pnpm" | "yarn";
+  install?: boolean;
+  run?: boolean;
+  gitInit?: boolean;
+  typescript?: boolean;
 }
 
 const ENV_FILE = ".env";
@@ -97,6 +109,17 @@ async function saveConfig(projectDir: string, config: { apiToken?: string; strap
 export async function completeSetup(options: SetupOptions): Promise<void> {
   const { projectDir, strapiDir, strapiUrl: optionUrl, apiToken: optionToken, ignoreSavedToken } = options;
 
+  if (!(await fs.pathExists(strapiDir))) {
+    if (!options.scaffold) {
+      throw new Error(`Strapi directory not found: ${strapiDir}`);
+    }
+
+    await scaffoldStrapiProject({
+      strapiDir,
+      ...options.scaffoldOptions
+    });
+  }
+
   // Load saved config
   const savedConfig = await loadConfig(projectDir);
   const strapiUrl = optionUrl || savedConfig.strapiUrl || "http://localhost:1337";
@@ -166,6 +189,67 @@ export async function completeSetup(options: SetupOptions): Promise<void> {
   console.log("   1. Open Strapi admin: http://localhost:1337/admin");
   console.log("   2. Check Content Manager - your content should be there!");
   console.log("   3. Connect your Nuxt app to Strapi API");
+}
+
+/**
+ * Scaffold a new Strapi project using the official Strapi create CLI.
+ */
+export async function scaffoldStrapiProject(options: StrapiScaffoldOptions): Promise<void> {
+  const {
+    strapiDir,
+    packageManager = "npm",
+    install = true,
+    run = false,
+    gitInit = false,
+    typescript = true
+  } = options;
+
+  const resolvedDir = path.resolve(strapiDir);
+  if (await fs.pathExists(resolvedDir)) {
+    const entries = await fs.readdir(resolvedDir);
+    if (entries.length > 0) {
+      throw new Error(`Cannot scaffold Strapi into a non-empty directory: ${resolvedDir}`);
+    }
+  }
+
+  await fs.ensureDir(path.dirname(resolvedDir));
+
+  const args = [
+    "create-strapi@latest",
+    resolvedDir,
+    typescript ? "--typescript" : "--javascript",
+    install ? "--install" : "--no-install",
+    gitInit ? "--git-init" : "--no-git-init",
+    `--use-${packageManager}`
+  ];
+  if (!run) {
+    args.push("--no-run");
+  }
+
+  console.log("🏗️  Scaffolding Strapi project...");
+  console.log(`   npx ${args.join(" ")}`);
+
+  await runCommand("npx", args, process.cwd());
+  console.log(`✓ Strapi project scaffolded at ${resolvedDir}`);
+}
+
+function runCommand(command: string, args: string[], cwd: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd,
+      stdio: "inherit",
+      shell: process.platform === "win32"
+    });
+
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`${command} ${args.join(" ")} exited with code ${code}`));
+      }
+    });
+  });
 }
 
 /**

@@ -3,6 +3,7 @@
  */
 
 import type { CMSManifest, PageManifest } from '@see-ms/types';
+import type { SharedComponent } from '@see-ms/types';
 import fs from 'fs-extra';
 import path from 'path';
 import { analyzeVuePages, DetectionOptions } from './detector';
@@ -15,6 +16,16 @@ export interface ManifestOptions {
   collectionClasses?: string[];
   /** Mapping of collection class names to display names */
   collectionNames?: Record<string, string>;
+  /** Shared components extracted during conversion */
+  sharedComponents?: SharedComponent[];
+  /** Selectors to ignore during field detection */
+  ignoreSelectors?: string[];
+  /** Classes to ignore during field detection */
+  ignoreClasses?: string[];
+  /** CMS provider */
+  provider?: 'strapi' | 'contentful' | 'sanity';
+  /** Route lookup by page id */
+  pageRoutes?: Record<string, string>;
 }
 
 /**
@@ -27,6 +38,8 @@ export async function generateManifest(
   // Build detection options
   const detectionOptions: DetectionOptions = {
     collectionClasses: options.collectionClasses,
+    ignoreSelectors: options.ignoreSelectors,
+    ignoreClasses: options.ignoreClasses,
   };
 
   // Analyze all Vue pages
@@ -58,7 +71,7 @@ export async function generateManifest(
       fields: detection.fields,
       collections,
       meta: {
-        route: pageName === 'index' ? '/' : `/${pageName}`,
+        route: options.pageRoutes?.[pageName] || (pageName === 'index' ? '/' : `/${pageName}`),
       },
     };
   }
@@ -66,6 +79,18 @@ export async function generateManifest(
   const manifest: CMSManifest = {
     version: '1.0',
     pages,
+    global: options.sharedComponents && options.sharedComponents.length > 0
+      ? {
+          components: Object.fromEntries(
+            options.sharedComponents.map((component) => [component.name, component])
+          ),
+        }
+      : undefined,
+    providers: {
+      [options.provider || 'strapi']: {
+        version: '1'
+      }
+    }
   };
 
   return manifest;
