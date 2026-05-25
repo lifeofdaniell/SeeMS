@@ -63,6 +63,10 @@ export interface CollectionMapping {
   selector: string;
   /** Fields within each collection item */
   fields: Record<string, CollectionFieldMapping | string>;
+  /** Optional Vue component used to render each collection item */
+  componentName?: string;
+  /** How this collection should be stored by the CMS adapter */
+  storage?: 'collection-type' | 'page-repeatable' | 'global-repeatable';
   /** Optional limit for number of items */
   limit?: number;
 }
@@ -92,6 +96,14 @@ export interface SharedComponent {
   pages: string[];
   /** Editable fields within the component */
   fields?: Record<string, FieldMapping>;
+  /** How this component participates in generated pages */
+  role?: 'shared-section' | 'collection-item';
+  /** Collection name when role is collection-item */
+  collectionName?: string;
+  /** How collection item data should be stored */
+  collectionStorage?: 'collection-type' | 'page-repeatable' | 'global-repeatable';
+  /** How component content is stored */
+  contentMode?: 'shared-global' | 'per-page' | 'auto';
   /** How confident the extractor is that this should be componentized */
   confidence?: 'high' | 'medium' | 'low';
   /** Why this component was detected */
@@ -116,6 +128,7 @@ export interface CMSManifest {
 }
 
 export interface SeeMSConfig {
+  target?: 'nuxt' | 'astro-vue';
   cms?: {
     provider?: 'strapi' | 'contentful' | 'sanity';
     strapi?: {
@@ -132,10 +145,23 @@ export interface SeeMSConfig {
   }>;
   components?: {
     enabled?: boolean;
+    match?: 'exact' | 'structure';
     minOccurrences?: number;
+    minPages?: number;
     minSectionSize?: number;
+    writeConfidence?: 'high' | 'medium' | 'low';
     include?: string[];
     exclude?: string[];
+    rules?: Array<{
+      name: string;
+      selector: string;
+      role?: 'shared-section' | 'collection-item';
+      collectionName?: string;
+      collectionStorage?: 'collection-type' | 'page-repeatable' | 'global-repeatable';
+      contentMode?: 'shared-global' | 'per-page' | 'auto';
+      minOccurrences?: number;
+      minPages?: number;
+    }>;
   };
   ignore?: {
     selectors?: string[];
@@ -145,6 +171,10 @@ export interface SeeMSConfig {
   editor?: {
     enabled?: boolean;
     previewParam?: string;
+  };
+  assets?: {
+    /** Drop Webflow responsive derivatives like image-p-1600.jpg and image-p-130x130q80.png */
+    excludeResponsiveVariants?: boolean;
   };
 }
 
@@ -195,6 +225,8 @@ export interface ConversionOptions {
   inputDir: string;
   /** Path to output Nuxt project */
   outputDir: string;
+  /** Output app target */
+  target?: 'nuxt' | 'astro-vue';
   /** Optional overrides file path */
   overridesPath?: string;
   /** Whether to generate Strapi schemas immediately */

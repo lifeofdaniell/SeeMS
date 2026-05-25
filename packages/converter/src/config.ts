@@ -2,14 +2,19 @@ import fs from "fs-extra";
 import path from "path";
 import type { SeeMSConfig } from "@see-ms/types";
 
-export const DEFAULT_SEEMS_CONFIG: Required<Pick<SeeMSConfig, "cms" | "components" | "ignore" | "editor">> = {
+export const DEFAULT_SEEMS_CONFIG: Required<Pick<SeeMSConfig, "target" | "cms" | "components" | "ignore" | "editor" | "assets">> = {
+  target: "nuxt",
   cms: { provider: "strapi", strapi: { scaffold: false, packageManager: "npm", install: true } },
   components: {
     enabled: true,
+    match: "structure",
     minOccurrences: 2,
+    minPages: 2,
     minSectionSize: 200,
+    writeConfidence: "medium",
     include: ["nav", "header", "footer"],
-    exclude: []
+    exclude: [],
+    rules: []
   },
   ignore: {
     selectors: [],
@@ -18,6 +23,9 @@ export const DEFAULT_SEEMS_CONFIG: Required<Pick<SeeMSConfig, "cms" | "component
   editor: {
     enabled: true,
     previewParam: "preview"
+  },
+  assets: {
+    excludeResponsiveVariants: true
   }
 };
 
@@ -33,6 +41,7 @@ export function mergeConfig(base: SeeMSConfig = {}, override: SeeMSConfig = {}):
     components: { ...base.components, ...override.components },
     ignore: { ...base.ignore, ...override.ignore },
     editor: { ...base.editor, ...override.editor },
+    assets: { ...base.assets, ...override.assets },
     collections: override.collections ?? base.collections,
     fields: { ...base.fields, ...override.fields }
   };

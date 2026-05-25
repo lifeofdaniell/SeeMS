@@ -17,6 +17,7 @@ import { writeAllSchemas, createStrapiReadme, writeLinkComponentSchema } from ".
 import { analyzeWebflowExport, renderReportMarkdown } from "./analyzer";
 import { loadSeeMSConfig, mergeConfig, normalizeConfig } from "./config";
 import type { CMSManifest, ConversionReport, SeeMSConfig } from "@see-ms/types";
+import type { ProjectTarget } from "./boilerplate";
 
 const program = new Command();
 
@@ -26,6 +27,17 @@ const program = new Command();
 interface CollectionConfig {
   className: string;
   collectionName: string;
+}
+
+interface ComponentRuleConfig {
+  name: string;
+  selector: string;
+  role?: "shared-section" | "collection-item";
+  collectionName?: string;
+  collectionStorage?: "collection-type" | "page-repeatable" | "global-repeatable";
+  contentMode?: "shared-global" | "per-page" | "auto";
+  minOccurrences?: number;
+  minPages?: number;
 }
 
 /**
@@ -69,7 +81,10 @@ function classToCollectionName(className: string): string {
     .replace(/[-_]wrapper$/, '');
 
   // Convert to snake_case
-  name = name.replace(/-/g, '_');
+  name = name
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/-/g, '_')
+    .toLowerCase();
 
   // Make plural if not already
   if (!name.endsWith('s')) {
@@ -82,6 +97,24 @@ function classToCollectionName(className: string): string {
 function toPackageManager(value: string): "npm" | "pnpm" | "yarn" {
   if (value === "pnpm" || value === "yarn") return value;
   return "npm";
+}
+
+async function select(question: string, choices: Array<{ label: string; value: string }>, defaultValue: string): Promise<string> {
+  console.log(question);
+  choices.forEach((choice, index) => {
+    const marker = choice.value === defaultValue ? " default" : "";
+    console.log(pc.dim(`  ${index + 1}. ${choice.label}${marker}`));
+  });
+  const answer = await prompt(pc.cyan("   > "));
+  if (!answer) return defaultValue;
+  const index = Number(answer) - 1;
+  if (Number.isInteger(index) && choices[index]) return choices[index].value;
+  const direct = choices.find(choice => choice.value === answer || choice.label.toLowerCase() === answer.toLowerCase());
+  return direct?.value || defaultValue;
+}
+
+function toProjectTarget(value: string | undefined): ProjectTarget {
+  return value === "astro-vue" || value === "astro" ? "astro-vue" : "nuxt";
 }
 
 /**
@@ -126,6 +159,79 @@ async function promptForCollections(): Promise<CollectionConfig[]> {
   return collections;
 }
 
+async function promptForComponentRules(existing: ComponentRuleConfig[] = []): Promise<ComponentRuleConfig[]> {
+  console.log("");
+  console.log(pc.cyan("🧩 Component Rules"));
+  console.log(pc.dim("   Add named selectors for reusable blocks you definitely want componentized."));
+  console.log(pc.dim("   Example: AnnouncementBar = .quantum-zenith-design-system--c-announcement"));
+  console.log("");
+
+  const rules = [...existing];
+  if (rules.length > 0) {
+    console.log(pc.dim(`Using ${rules.length} existing component rule(s) from config.`));
+  }
+
+  const addRules = await confirm(pc.white("Add a component rule by name and selector?"), false);
+  if (!addRules) return rules;
+
+  while (true) {
+    const name = await prompt(pc.cyan("   Component name: "));
+    if (!name) break;
+
+    const selector = await prompt(pc.cyan("   CSS selector: "));
+    if (!selector) break;
+
+    const minPagesInput = await prompt(pc.cyan("   Minimum pages (2): "));
+    const minPages = Number(minPagesInput) || 2;
+
+    const role = await select(pc.cyan("   What kind of component is this?"), [
+      { label: "Shared section/block", value: "shared-section" },
+      { label: "Repeated item rendered with v-for", value: "collection-item" },
+    ], "shared-section") as "shared-section" | "collection-item";
+
+    let collectionName: string | undefined;
+    let collectionStorage: "collection-type" | "page-repeatable" | "global-repeatable" | undefined;
+    if (role === "collection-item") {
+      const suggestedCollection = classToCollectionName(name);
+      const collectionInput = await prompt(
+        pc.cyan(`   Collection name (${suggestedCollection}): `)
+      );
+      collectionName = collectionInput || suggestedCollection;
+      collectionStorage = await select(pc.cyan("   How should these repeated items be stored?"), [
+        { label: "Strapi collection type", value: "collection-type" },
+        { label: "Page repeatable field (coming next)", value: "page-repeatable" },
+        { label: "Global repeatable field (coming next)", value: "global-repeatable" },
+      ], "collection-type") as "collection-type" | "page-repeatable" | "global-repeatable";
+      if (collectionStorage !== "collection-type") {
+        console.log(pc.yellow("   Repeatable fields are not fully wired yet; using Strapi collection type for this run."));
+        collectionStorage = "collection-type";
+      }
+    }
+
+    const contentMode = await select(pc.cyan("   How should this component's editable content be stored?"), [
+      { label: "Auto/default: shared global for now", value: "auto" },
+      { label: "Shared global content, same everywhere", value: "shared-global" },
+      { label: "Per-page instances, same structure with different content", value: "per-page" },
+    ], "auto") as "shared-global" | "per-page" | "auto";
+
+    rules.push({
+      name,
+      selector,
+      role,
+      collectionName,
+      collectionStorage,
+      contentMode,
+      minOccurrences: minPages,
+      minPages
+    });
+
+    const another = await confirm(pc.white("   Add another component rule?"), false);
+    if (!another) break;
+  }
+
+  return rules;
+}
+
 program
   .name("cms")
   .description("SeeMS - Webflow to CMS converter")
@@ -133,9 +239,10 @@ program
 
 program
   .command("convert")
-  .description("Convert Webflow export to Nuxt 3 project with CMS integration")
-  .argument("<input>", "Path to Webflow export directory")
-  .argument("<output>", "Path to output Nuxt project directory")
+  .description("Convert Webflow export to a framework project with CMS integration")
+  .argument("[input]", "Path to Webflow export directory")
+  .argument("[output]", "Path to output project directory")
+  .option("--target <target>", "Output target (nuxt|astro-vue)")
   .option(
     "-b, --boilerplate <source>",
     "Boilerplate source (GitHub URL or local path)"
@@ -144,8 +251,7 @@ program
   .option("--config <path>", "Path to see-ms config file")
   .option(
     "--cms <type>",
-    "CMS backend type (strapi|contentful|sanity)",
-    "strapi"
+    "CMS backend type (strapi|contentful|sanity)"
   )
   .option("--skip-prompts", "Skip interactive prompts (for CI/CD)")
   .option("--collection-classes <classes>", "Comma-separated collection class patterns")
@@ -157,22 +263,60 @@ program
   .option("--no-strapi-install", "Scaffold Strapi without installing dependencies")
   .action(async (input, output, options) => {
     try {
+      const skipPrompts = options.skipPrompts || false;
+      if (!input) {
+        if (skipPrompts) throw new Error("Input path is required when --skip-prompts is used");
+        input = await prompt(pc.cyan("📁 Webflow export directory: "));
+      }
+      if (!output) {
+        if (skipPrompts) throw new Error("Output project directory is required when --skip-prompts is used");
+        const defaultOutput = path.resolve(process.cwd(), `${path.basename(path.resolve(input))}-seems`);
+        const answer = await prompt(pc.cyan(`📁 Output project directory (${defaultOutput}): `));
+        output = answer || defaultOutput;
+      }
+
       console.log("");
       console.log(pc.cyan(pc.bold("🚀 SeeMS Converter")));
       console.log(pc.dim(`   Converting: ${input} → ${output}`));
       console.log("");
 
-      const skipPrompts = options.skipPrompts || false;
       const loadedConfig = options.config ? await loadSeeMSConfig(options.config) : {};
-      let collections: CollectionConfig[] = (loadedConfig.collections || []).map(collection => ({
+      let collections: CollectionConfig[] = (loadedConfig.collections || []).map((collection: NonNullable<SeeMSConfig["collections"]>[number]) => ({
         className: collection.className,
         collectionName: collection.name || classToCollectionName(collection.className)
       }));
       let generateContent = true;
       let enableEditor = options.editor !== false && loadedConfig.editor?.enabled !== false;
+      let target = toProjectTarget(options.target || loadedConfig.target);
+      let cmsProvider = options.cms || loadedConfig.cms?.provider || "strapi";
+      let detectComponents = loadedConfig.components?.enabled !== false;
+      let componentMatch = loadedConfig.components?.match || "structure";
+      let componentMinOccurrences = loadedConfig.components?.minOccurrences || 2;
+      let componentMinPages = loadedConfig.components?.minPages || componentMinOccurrences;
+      let componentRules: ComponentRuleConfig[] = loadedConfig.components?.rules || [];
 
       // Prompt for collections (unless skipped or provided via CLI)
       if (!skipPrompts) {
+        target = toProjectTarget(await select(pc.cyan("🎯 What are you converting to?"), [
+          { label: "Nuxt 3", value: "nuxt" },
+          { label: "Astro + Vue", value: "astro-vue" }
+        ], target));
+
+        cmsProvider = await select(pc.cyan("🧠 Which CMS provider?"), [
+          { label: "Strapi", value: "strapi" }
+        ], cmsProvider);
+
+        detectComponents = await confirm(pc.cyan("Extract shared components from repeated sections?"), detectComponents);
+        if (detectComponents) {
+          componentMatch = await select(pc.cyan("🧩 How strict should component matching be?"), [
+            { label: "Exact repeated HTML blocks", value: "exact" },
+            { label: "Matching DOM structure", value: "structure" }
+          ], componentMatch) as "exact" | "structure";
+          componentMinOccurrences = Number(await prompt(pc.cyan(`Minimum total occurrences (${componentMinOccurrences}): `))) || componentMinOccurrences;
+          componentMinPages = Number(await prompt(pc.cyan(`Minimum pages (${componentMinPages}): `))) || componentMinPages;
+          componentRules = await promptForComponentRules(componentRules);
+        }
+
         if (options.collectionClasses) {
           // Parse CLI option
           const classes = options.collectionClasses.split(",").map((c: string) => c.trim());
@@ -226,6 +370,19 @@ program
       // Show configuration
       console.log("");
       console.log(pc.green("✓ Configuration:"));
+      console.log(pc.dim(`  • Target: ${target === "astro-vue" ? "Astro + Vue" : "Nuxt 3"}`));
+      console.log(pc.dim(`  • CMS: ${cmsProvider}`));
+      console.log(pc.dim(`  • Component matching: ${componentMatch}, ${componentMinOccurrences}+ occurrences on ${componentMinPages}+ pages`));
+      if (componentRules.length > 0) {
+        console.log(pc.dim(`  • Component rules: ${componentRules.map(rule => {
+          const role = rule.role || "shared-section";
+          const contentMode = rule.contentMode || "auto";
+          const collection = rule.role === "collection-item" && rule.collectionName
+            ? `, collection: ${rule.collectionName}`
+            : "";
+          return `${rule.name} (${rule.selector}, ${role}, ${contentMode}${collection})`;
+        }).join(", ")}`));
+      }
       if (collections.length > 0) {
         console.log(pc.dim(`  • Collections: ${collections.map(c => `${c.className} → ${c.collectionName}`).join(", ")}`));
       } else {
@@ -240,7 +397,8 @@ program
       console.log("");
 
       const cliConfig: SeeMSConfig = {
-        cms: { provider: options.cms },
+        target,
+        cms: { provider: cmsProvider as "strapi" },
         collections: collections.map(collection => ({
           className: collection.className,
           name: collection.collectionName
@@ -248,6 +406,14 @@ program
         editor: {
           enabled: enableEditor,
           previewParam: "preview"
+        },
+        components: {
+          ...loadedConfig.components,
+          enabled: detectComponents,
+          match: componentMatch as "exact" | "structure",
+          minOccurrences: componentMinOccurrences,
+          minPages: componentMinPages,
+          rules: componentRules
         }
       };
 
@@ -259,7 +425,8 @@ program
         configPath: options.config,
         config: mergeConfig(loadedConfig, cliConfig),
         generateStrapi: true,
-        cmsBackend: options.cms,
+        cmsBackend: cmsProvider as "strapi",
+        target,
         collectionClasses: collections.map(c => c.className),
         collectionNames: Object.fromEntries(collections.map(c => [c.className, c.collectionName])),
         extractComponents: true,
@@ -273,7 +440,7 @@ program
       const configStrapi = loadedConfig.cms?.strapi;
       const requestedStrapiDir = options.scaffoldStrapi || options.strapiDir || configStrapi?.directory;
       const shouldScaffoldFromConfig = Boolean(configStrapi?.scaffold && requestedStrapiDir);
-      if (options.cms === "strapi" && skipPrompts && requestedStrapiDir) {
+      if (cmsProvider === "strapi" && skipPrompts && requestedStrapiDir) {
         await completeSetup({
           projectDir: output,
           strapiDir: requestedStrapiDir,
@@ -290,7 +457,7 @@ program
       }
 
       // Optional Strapi server setup
-      if (options.cms === "strapi" && !skipPrompts) {
+      if (cmsProvider === "strapi" && !skipPrompts) {
         console.log("");
         const shouldSetup = await confirm(
           pc.cyan("🎯 Would you like to set up Strapi now?"),
@@ -348,10 +515,13 @@ program
 program
   .command("analyze")
   .description("Analyze a Webflow export and preview pages, assets, and component candidates")
-  .argument("<input>", "Path to Webflow export directory")
+  .argument("[input]", "Path to Webflow export directory")
   .option("--config <path>", "Path to see-ms config file")
   .action(async (input, options) => {
     try {
+      if (!input) {
+        input = await prompt(pc.cyan("📁 Webflow export directory to analyze: "));
+      }
       const config = options.config ? await loadSeeMSConfig(options.config) : {};
       const analysis = await analyzeWebflowExport(input, normalizeConfig(config));
       const report: ConversionReport = {
@@ -391,7 +561,7 @@ program
 program
   .command("scaffold-strapi")
   .description("Scaffold a new Strapi project for a converted SeeMS site")
-  .argument("<strapi-dir>", "Path where the new Strapi project should be created")
+  .argument("[strapi-dir]", "Path where the new Strapi project should be created")
   .option("--package-manager <manager>", "Package manager (npm|pnpm|yarn)", "npm")
   .option("--no-install", "Create project files without installing dependencies")
   .option("--run", "Start Strapi after scaffolding")
@@ -399,10 +569,17 @@ program
   .option("--javascript", "Use JavaScript instead of TypeScript")
   .action(async (strapiDir, options) => {
     try {
+      if (!strapiDir) {
+        strapiDir = await prompt(pc.cyan("📁 New Strapi project directory: "));
+      }
+      const install = options.install !== false && await confirm(
+        pc.cyan("Install Strapi dependencies after scaffolding?"),
+        true
+      );
       await scaffoldStrapiProject({
         strapiDir,
         packageManager: toPackageManager(options.packageManager),
-        install: options.install !== false,
+        install,
         run: Boolean(options.run),
         gitInit: Boolean(options.gitInit),
         typescript: !options.javascript
@@ -417,8 +594,8 @@ program
 program
   .command("setup-strapi")
   .description("Setup Strapi with schemas and seed data")
-  .argument("<project-dir>", "Path to converted project directory")
-  .argument("<strapi-dir>", "Path to Strapi directory")
+  .argument("[project-dir]", "Path to converted project directory")
+  .argument("[strapi-dir]", "Path to Strapi directory")
   .option("--url <url>", "Strapi URL", "http://localhost:1337")
   .option("--token <token>", "Strapi API token (optional)")
   .option("--new-token", "Ignore saved token and prompt for a new one")
@@ -427,17 +604,33 @@ program
   .option("--no-install", "Scaffold without installing dependencies")
   .action(async (projectDir, strapiDir, options) => {
     try {
+      if (!projectDir) {
+        projectDir = await prompt(pc.cyan("📁 Converted project directory: "));
+      }
+      if (!strapiDir) {
+        strapiDir = await prompt(pc.cyan("📁 Strapi directory: "));
+      }
+      const strapiExists = strapiDir ? await fs.pathExists(strapiDir) : false;
+      const scaffold = Boolean(options.scaffold) || (!strapiExists && await confirm(
+        pc.cyan("That Strapi directory does not exist. Scaffold it now?"),
+        true
+      ));
+      const install = options.install !== false && (!scaffold || await confirm(
+        pc.cyan("Install Strapi dependencies after scaffolding?"),
+        true
+      ));
+
       await completeSetup({
         projectDir,
         strapiDir,
         strapiUrl: options.url,
         apiToken: options.token,
         ignoreSavedToken: options.newToken,
-        scaffold: Boolean(options.scaffold),
+        scaffold,
         scaffoldOptions: {
           strapiDir,
           packageManager: toPackageManager(options.packageManager),
-          install: options.install !== false,
+          install,
           run: false,
           gitInit: false,
           typescript: true
@@ -453,11 +646,14 @@ program
 program
   .command("generate")
   .description("Generate CMS schemas from manifest")
-  .argument("<manifest>", "Path to cms-manifest.json")
+  .argument("[manifest]", "Path to cms-manifest.json")
   .option("-t, --type <cms>", "CMS type (strapi|contentful|sanity)", "strapi")
   .option("-o, --output <dir>", "Output directory for schemas")
   .action(async (manifestPath, options) => {
     try {
+      if (!manifestPath) {
+        manifestPath = await prompt(pc.cyan("📄 Path to cms-manifest.json: "));
+      }
       console.log(pc.cyan("🗂️  SeeMS Schema Generator"));
       console.log(pc.dim(`Reading manifest from: ${manifestPath}`));
 
@@ -471,9 +667,17 @@ program
 
       console.log(pc.green(`  ✓ Manifest loaded successfully`));
 
-      const outputDir = options.output || path.dirname(manifestPath);
+      const type = options.type || await select(pc.cyan("🧠 Generate schemas for which CMS?"), [
+        { label: "Strapi", value: "strapi" }
+      ], "strapi");
+      let outputDir = options.output;
+      if (!outputDir) {
+        const defaultOutput = path.dirname(manifestPath);
+        const answer = await prompt(pc.cyan(`📁 Schema output directory (${defaultOutput}): `));
+        outputDir = answer || defaultOutput;
+      }
 
-      if (options.type !== "strapi") {
+      if (type !== "strapi") {
         console.log(
           pc.yellow(
             `⚠️  Only Strapi is currently supported. Using Strapi schema format.`

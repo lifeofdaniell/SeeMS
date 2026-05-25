@@ -8,6 +8,7 @@ import path from "path";
 import { glob } from "glob";
 import * as readline from "readline";
 import { spawn } from "child_process";
+import { isLikelyImagePath, mediaLookupKeys } from "./assets";
 
 // @ts-ignore
 interface SchemaFile {
@@ -177,7 +178,7 @@ export async function completeSetup(options: SetupOptions): Promise<void> {
   // Step 5: Upload images
   console.log("📸 Step 5: Uploading images...");
   const mediaMap = await uploadAllImages(projectDir, strapiUrl, token);
-  console.log(`✓ Uploaded ${Object.keys(mediaMap).length} images\n`);
+  console.log(`✓ Mapped ${mediaMap.size} media lookup keys\n`);
 
   // Step 6: Seed content
   console.log("📝 Step 6: Seeding content...");
@@ -218,6 +219,9 @@ export async function scaffoldStrapiProject(options: StrapiScaffoldOptions): Pro
     "create-strapi@latest",
     resolvedDir,
     typescript ? "--typescript" : "--javascript",
+    "--skip-cloud",
+    "--skip-db",
+    "--no-example",
     install ? "--install" : "--no-install",
     gitInit ? "--git-init" : "--no-git-init",
     `--use-${packageManager}`
@@ -230,6 +234,9 @@ export async function scaffoldStrapiProject(options: StrapiScaffoldOptions): Pro
   console.log(`   npx ${args.join(" ")}`);
 
   await runCommand("npx", args, process.cwd());
+  if (!(await fs.pathExists(path.join(resolvedDir, "package.json")))) {
+    throw new Error(`Strapi scaffold did not create a project at ${resolvedDir}`);
+  }
   console.log(`✓ Strapi project scaffolded at ${resolvedDir}`);
 }
 
@@ -492,7 +499,7 @@ async function uploadAllImages(
     return mediaMap;
   }
 
-  const imageFiles = await glob("**/*.{jpg,jpeg,png,gif,webp,svg}", {
+  const imageFiles = await glob("**/*.{jpg,jpeg,png,gif,webp,avif,svg}", {
     cwd: imagesDir,
     absolute: false
   });
@@ -512,8 +519,7 @@ async function uploadAllImages(
 
     if (existingId) {
       // Use existing media ID
-      mediaMap.set(`/images/${imageFile}`, existingId);
-      mediaMap.set(imageFile, existingId);
+      addMediaMapEntries(mediaMap, imageFile, existingId);
       skippedCount++;
       continue;
     }
@@ -523,8 +529,7 @@ async function uploadAllImages(
     const mediaId = await uploadImage(imagePath, imageFile, strapiUrl, apiToken);
 
     if (mediaId) {
-      mediaMap.set(`/images/${imageFile}`, mediaId);
-      mediaMap.set(imageFile, mediaId);
+      addMediaMapEntries(mediaMap, imageFile, mediaId);
       uploadedCount++;
       console.log(`   ✓ ${imageFile}`);
     }
@@ -586,6 +591,7 @@ function getMimeType(fileName: string): string {
     ".png": "image/png",
     ".gif": "image/gif",
     ".webp": "image/webp",
+    ".avif": "image/avif",
     ".svg": "image/svg+xml"
   };
   return mimeTypes[ext] || "application/octet-stream";
@@ -678,14 +684,19 @@ function processMediaFields(data: any, mediaMap: Map<string, number>): any {
       // Check if this is an image path
       if (
         key.includes("image") ||
+        key.includes("img") ||
         key.includes("bg") ||
-        value.startsWith("/images/")
+        value.startsWith("/images/") ||
+        value.startsWith("images/") ||
+        value.startsWith("/assets/images/") ||
+        value.startsWith("assets/images/") ||
+        isLikelyImagePath(value)
       ) {
-        const mediaId = mediaMap.get(value);
+        const mediaId = findMediaId(mediaMap, value);
         if (mediaId) {
           processed[key] = mediaId;
         } else {
-          processed[key] = value; // Keep original if not found
+          processed[key] = null;
         }
       } else {
         processed[key] = value;
@@ -696,6 +707,20 @@ function processMediaFields(data: any, mediaMap: Map<string, number>): any {
   }
 
   return processed;
+}
+
+function addMediaMapEntries(mediaMap: Map<string, number>, imageFile: string, mediaId: number): void {
+  for (const key of mediaLookupKeys(imageFile)) {
+    mediaMap.set(key, mediaId);
+  }
+}
+
+function findMediaId(mediaMap: Map<string, number>, value: string): number | undefined {
+  for (const key of mediaLookupKeys(value)) {
+    const mediaId = mediaMap.get(key);
+    if (mediaId) return mediaId;
+  }
+  return undefined;
 }
 
 /**

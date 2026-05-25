@@ -5,6 +5,7 @@
 
 import * as cheerio from "cheerio";
 import path from "path";
+import { normalizeAssetUrl, toOriginalImageCandidate } from "./assets";
 
 export interface ParsedPage {
   fileName: string;
@@ -73,7 +74,8 @@ function normalizeAssetPath(src: string): string {
   }
 
   // Remove any ../ or ./ at the start
-  let normalized = src.replace(/^(\.\.\/)+/, "").replace(/^\.\//, "");
+  let normalized = normalizeAssetUrl(src).replace(/^(\.\.\/)+/, "").replace(/^\.\//, "");
+  normalized = toOriginalImageCandidate(normalized);
 
   // If it already starts with /assets/, clean up any ../ in the middle
   if (normalized.startsWith("/assets/")) {
@@ -248,14 +250,16 @@ function escapeAttribute(value: string): string {
 export function htmlToVueComponent(
   html: string,
   pageName: string,
-  componentImports?: string[]
+  componentImports?: string[],
+  componentImportBase = "~/components"
 ): string {
   // Generate component imports if any
   let importsSection = "";
   if (componentImports && componentImports.length > 0) {
     importsSection = componentImports
-      .map(name => `import ${name} from '~/components/${name}.vue';`)
+      .map(name => `import ${name} from '${componentImportBase}/${name}.vue';`)
       .join("\n");
+    html = restoreComponentTags(replaceComponentMarkers(html), componentImports);
   }
 
   return `<script setup lang="ts">
@@ -269,6 +273,21 @@ ${importsSection}
   </div>
 </template>
 `;
+}
+
+function replaceComponentMarkers(html: string): string {
+  return html.replace(/<!--COMPONENT:(\w+)-->/g, "<$1 />");
+}
+
+function restoreComponentTags(html: string, componentImports: string[]): string {
+  let restored = html;
+  for (const name of componentImports) {
+    const lowered = name.toLowerCase();
+    restored = restored
+      .replace(new RegExp(`<${lowered}\\s*><\\/${lowered}>`, "g"), `<${name} />`)
+      .replace(new RegExp(`<${lowered}\\s*\\/>`, "g"), `<${name} />`);
+  }
+  return restored;
 }
 
 /**

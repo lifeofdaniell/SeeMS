@@ -31,6 +31,8 @@ export interface SectionInfo {
   selector: string;
   /** Structural fingerprint (hash of DOM structure) */
   fingerprint: string;
+  /** Exact-ish HTML fingerprint with normalized volatile attributes */
+  exactFingerprint: string;
   /** Cheerio element reference */
   $element: Cheerio<any>;
   /** Original HTML content */
@@ -50,16 +52,20 @@ export interface ExtractedComponent {
   fingerprint: string;
   confidence: "high" | "medium" | "low";
   reason: string;
+  role?: "shared-section" | "collection-item";
+  collectionName?: string;
+  collectionStorage?: "collection-type" | "page-repeatable" | "global-repeatable";
+  contentMode?: "shared-global" | "per-page" | "auto";
 }
 
 /**
  * Class name patterns that suggest semantic component types
  */
 const COMPONENT_NAME_PATTERNS: Record<string, RegExp[]> = {
-  Nav: [/nav/i, /navbar/i, /navigation/i, /header.*nav/i, /main.*menu/i],
-  Footer: [/footer/i, /site.*footer/i],
-  Header: [/header/i, /site.*header/i, /page.*header/i],
-  Sidebar: [/sidebar/i, /side.*bar/i, /aside/i]
+  TheNav: [/nav/i, /navbar/i, /navigation/i, /header.*nav/i, /main.*menu/i],
+  TheFooter: [/footer/i, /site.*footer/i],
+  TheHeader: [/header/i, /site.*header/i, /page.*header/i],
+  TheSidebar: [/sidebar/i, /side.*bar/i, /aside/i]
 };
 
 /**
@@ -69,10 +75,23 @@ const COMPONENT_NAME_PATTERNS: Record<string, RegExp[]> = {
 const DEFAULT_MIN_SECTION_SIZE = 200;
 
 export interface ComponentExtractionOptions {
+  match?: "exact" | "structure";
   minOccurrences?: number;
+  minPages?: number;
   minSectionSize?: number;
+  writeConfidence?: "high" | "medium" | "low";
   include?: string[];
   exclude?: string[];
+  rules?: Array<{
+    name: string;
+    selector: string;
+    role?: "shared-section" | "collection-item";
+    collectionName?: string;
+    collectionStorage?: "collection-type" | "page-repeatable" | "global-repeatable";
+    contentMode?: "shared-global" | "per-page" | "auto";
+    minOccurrences?: number;
+    minPages?: number;
+  }>;
 }
 
 /**
@@ -153,6 +172,7 @@ function extractSections($: CheerioAPI, minSectionSize: number): SectionInfo[] {
     seen.add(elementId);
 
     const fingerprint = createFingerprint($, $element);
+    const exactFingerprint = createExactFingerprint(html);
     const suggestedName = suggestComponentName($element);
     const semanticName = ["TheNav", "TheFooter", "TheHeader", "TheSidebar", "Nav", "Footer", "Header", "Sidebar"].includes(suggestedName);
 
@@ -164,6 +184,7 @@ function extractSections($: CheerioAPI, minSectionSize: number): SectionInfo[] {
     sections.push({
       selector: uniqueSelector,
       fingerprint,
+      exactFingerprint,
       $element,
       html,
       suggestedName
@@ -171,6 +192,17 @@ function extractSections($: CheerioAPI, minSectionSize: number): SectionInfo[] {
   });
 
   return sections;
+}
+
+function createExactFingerprint(html: string): string {
+  const normalized = html
+    .replace(/\s*data-w-id="[^"]*"/g, "")
+    .replace(/\s*data-wf-page="[^"]*"/g, "")
+    .replace(/\s*data-wf-site="[^"]*"/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return crypto.createHash("md5").update(normalized).digest("hex").substring(0, 12);
 }
 
 /**
@@ -306,6 +338,10 @@ function suggestComponentName($element: Cheerio<any>): string {
  * Convert a string to PascalCase
  */
 function pascalCase(str: string): string {
+  if (/^[A-Z][A-Za-z0-9]*$/.test(str)) {
+    return str;
+  }
+
   return str
     .split(/[-_\s]+/)
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
@@ -358,16 +394,18 @@ function buildUniqueSelector($: CheerioAPI, $element: Cheerio<any>): string {
  */
 export function findSharedSections(
   pages: ParsedPage[],
-  options: Pick<ComponentExtractionOptions, "minOccurrences" | "include" | "exclude"> = {}
+  options: Pick<ComponentExtractionOptions, "match" | "minOccurrences" | "minPages" | "include" | "exclude" | "rules"> = {}
 ): ExtractedComponent[] {
   // Group sections by fingerprint
   const fingerprintMap = new Map<string, { section: SectionInfo; page: ParsedPage }[]>();
+  const match = options.match || "exact";
 
   for (const page of pages) {
     for (const section of page.sections) {
-      const existing = fingerprintMap.get(section.fingerprint) || [];
+      const fingerprint = match === "structure" ? section.fingerprint : section.exactFingerprint;
+      const existing = fingerprintMap.get(fingerprint) || [];
       existing.push({ section, page });
-      fingerprintMap.set(section.fingerprint, existing);
+      fingerprintMap.set(fingerprint, existing);
     }
   }
 
@@ -375,10 +413,11 @@ export function findSharedSections(
   const sharedComponents: ExtractedComponent[] = [];
   const usedNames = new Set<string>();
 
-  for (const [fingerprint, occurrences] of fingerprintMap.entries()) {
+  for (const occurrences of fingerprintMap.values()) {
     // Must appear in at least 2 different pages
     const uniquePages = new Set(occurrences.map((o) => o.page.name));
-    if (uniquePages.size < (options.minOccurrences ?? 2)) continue;
+    if (occurrences.length < (options.minOccurrences ?? 2)) continue;
+    if (uniquePages.size < (options.minPages ?? options.minOccurrences ?? 2)) continue;
 
     // Use the first occurrence as the template
     const template = occurrences[0];
@@ -386,7 +425,7 @@ export function findSharedSections(
     // Generate unique component name
     let name = template.section.suggestedName;
     if (options.include?.length && !options.include.some((item) => name.toLowerCase().includes(item.toLowerCase()))) {
-      const semanticNames = ["TheNav", "TheFooter", "TheHeader", "TheSidebar", "Nav", "Footer", "Header", "Sidebar"];
+    const semanticNames = ["TheNav", "TheFooter", "TheHeader", "TheSidebar"];
       if (!semanticNames.includes(name)) continue;
     }
     if (options.exclude?.some((item) => name.toLowerCase().includes(item.toLowerCase()))) continue;
@@ -404,11 +443,13 @@ export function findSharedSections(
       selector: template.section.selector,
       pages: [...uniquePages],
       html: template.section.html,
-      fingerprint,
+      fingerprint: template.section.fingerprint,
       confidence,
       reason: confidence === "high"
         ? "Semantic or repeated site-wide section"
-        : "Repeated section with matching DOM structure"
+        : match === "exact"
+          ? "Exact repeated HTML section"
+          : "Repeated section with matching DOM structure"
     });
   }
 
@@ -502,7 +543,11 @@ export async function writeComponents(
       selector: component.selector,
       pages: component.pages,
       confidence: component.confidence,
-      reason: component.reason
+      reason: component.reason,
+      role: component.role || "shared-section",
+      collectionName: component.collectionName,
+      collectionStorage: component.collectionStorage,
+      contentMode: component.contentMode || "shared-global"
       // Fields will be detected separately
     });
   }
@@ -526,16 +571,77 @@ export async function extractSharedComponents(
     return [];
   }
 
-  // Find sections that appear across multiple pages
-  const sharedSections = findSharedSections(pages, options);
+  const rules = (options.rules || []).map((rule) => ({
+    ...rule,
+    minOccurrences: rule.minOccurrences ?? options.minOccurrences,
+    minPages: rule.minPages ?? options.minPages,
+  }));
+  const ruleSections = findRuleSections(pages, rules);
+  const sharedSections = [...ruleSections, ...findSharedSections(pages, options)];
 
   if (sharedSections.length === 0) {
     return [];
   }
 
   // Write components to disk
-  const componentsToWrite = sharedSections.filter((component) => component.confidence !== "low");
+  const componentsToWrite = sharedSections.filter((component) => meetsConfidence(component.confidence, options.writeConfidence || "medium"));
   const components = await writeComponents(outputDir, componentsToWrite);
 
   return components;
+}
+
+function findRuleSections(
+  pages: ParsedPage[],
+  rules: NonNullable<ComponentExtractionOptions["rules"]>
+): ExtractedComponent[] {
+  const components: ExtractedComponent[] = [];
+
+  for (const rule of rules) {
+    const occurrences: Array<{ page: ParsedPage; html: string }> = [];
+    for (const page of pages) {
+      const $elements = page.$(rule.selector);
+      if ($elements.length === 0) continue;
+
+      $elements.each((index, element) => {
+        if (rule.role !== "collection-item" && index > 0) return false;
+        occurrences.push({ page, html: page.$.html(element) });
+        return undefined;
+      });
+    }
+
+    const uniquePages = new Set(occurrences.map(({ page }) => page.name));
+    if (occurrences.length < (rule.minOccurrences ?? 2)) continue;
+    if (uniquePages.size < (rule.minPages ?? rule.minOccurrences ?? 2)) continue;
+
+    components.push({
+      name: pascalCase(rule.name),
+      selector: rule.selector,
+      pages: [...uniquePages],
+      html: occurrences[0].html,
+      fingerprint: crypto.createHash("md5").update(occurrences[0].html).digest("hex").substring(0, 12),
+      confidence: "high",
+      reason: "User-defined component rule",
+      role: rule.role || "shared-section",
+      collectionName: rule.collectionName || toCollectionName(rule.name),
+      collectionStorage: rule.collectionStorage || "collection-type",
+      contentMode: rule.contentMode || "auto"
+    });
+  }
+
+  return components;
+}
+
+function toCollectionName(name: string): string {
+  const base = name
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[-\s]+/g, "_")
+    .toLowerCase();
+
+  if (base.endsWith("s")) return base;
+  return `${base}s`;
+}
+
+function meetsConfidence(confidence: "high" | "medium" | "low", minimum: "high" | "medium" | "low"): boolean {
+  const rank = { low: 1, medium: 2, high: 3 };
+  return rank[confidence] >= rank[minimum];
 }

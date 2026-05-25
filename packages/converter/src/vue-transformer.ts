@@ -93,6 +93,12 @@ function transformCollection(
   // Get the first item as template
   const $first = $items.first();
 
+  if (collection.componentName) {
+    $first.replaceWith(`<!--COLLECTION_COMPONENT:${collection.componentName}:${collectionName}-->`);
+    $items.slice(1).remove();
+    return;
+  }
+
   // Add v-for to first item
   $first.attr("v-for", `(item, index) in content.${collectionName}`);
   $first.attr(":key", "index");
@@ -153,7 +159,8 @@ function transformCollection(
 export async function transformVueToReactive(
   vueFilePath: string,
   pageName: string,
-  manifest: CMSManifest
+  manifest: CMSManifest,
+  options: { target?: "nuxt" | "astro-vue" } = {}
 ): Promise<void> {
   const pageManifest = manifest.pages[pageName];
   if (!pageManifest) return;
@@ -171,7 +178,8 @@ export async function transformVueToReactive(
   const templateMatch = vueContent.match(/<template>([\s\S]*?)<\/template>/);
   if (!templateMatch) return;
 
-  const templateContent = templateMatch[1];
+  const componentNames = Object.keys(manifest.global?.components || {});
+  const templateContent = maskComponentTags(templateMatch[1], componentNames);
 
   // Load template content (cheerio will wrap in html/body, we'll strip it later)
   const $ = cheerio.load(templateContent, { xmlMode: false });
@@ -216,9 +224,24 @@ export async function transformVueToReactive(
     transformedTemplate = wrapperDivMatch[1].trim();
   }
 
+  const perPageComponentNames = componentNames.filter((name) => {
+    const component = manifest.global?.components?.[name];
+    return component?.contentMode === "per-page" && component.pages.includes(pageName);
+  });
+  transformedTemplate = restoreCollectionComponentTags(transformedTemplate);
+  transformedTemplate = restoreComponentTags(transformedTemplate, componentNames, perPageComponentNames);
+
   // Generate new script setup (no pending, just content)
+  const explicitImports = options.target === "astro-vue"
+    ? [
+        `import { useStrapiContent } from '~/src/composables/useStrapiContent';`,
+        ...componentNames.map((name) => `import ${name} from '~/components/${name}.vue';`)
+      ].join("\n")
+    : "";
+
   const scriptSetup = `<script setup lang="ts">
 // Auto-generated reactive content from Strapi
+${explicitImports}
 const { content } = useStrapiContent('${pageName}');
 </script>`;
 
@@ -238,12 +261,122 @@ ${finalTemplate}
   await fs.writeFile(vueFilePath, newVueContent, "utf-8");
 }
 
+export async function transformSharedComponentsToReactive(
+  componentsDir: string,
+  manifest: CMSManifest,
+  options: { target?: "nuxt" | "astro-vue" } = {}
+): Promise<void> {
+  const components = manifest.global?.components || {};
+
+  for (const [componentName, component] of Object.entries(components)) {
+    const fields = component.fields || {};
+    if (Object.keys(fields).length === 0) continue;
+
+    const filePath = path.join(componentsDir, `${componentName}.vue`);
+    if (!(await fs.pathExists(filePath))) continue;
+
+    const vueContent = await fs.readFile(filePath, "utf-8");
+    const templateMatch = vueContent.match(/<template>([\s\S]*?)<\/template>/);
+    if (!templateMatch) continue;
+
+    const $ = cheerio.load(templateMatch[1], { xmlMode: false });
+    const isCollectionItem = component.role === "collection-item";
+    const isPerPage = component.contentMode === "per-page";
+    const contentSource = isCollectionItem ? "item" : isPerPage ? "componentContent" : "content";
+
+    Object.entries(fields).forEach(([fieldName, field]) => {
+      const originalName = fieldName.startsWith(`${componentName}_`)
+        ? fieldName.slice(componentName.length + 1)
+        : fieldName;
+      const selector = field.selector;
+      $(selector).each((_, el) => {
+        replaceWithBinding($, $(el), fieldName, field.type);
+      });
+      if (originalName !== fieldName) {
+        $(selector).each((_, el) => {
+          replaceWithBinding($, $(el), fieldName, field.type);
+        });
+      }
+    });
+
+    let transformedTemplate = $.html();
+    const bodyMatch = transformedTemplate.match(/<body>([\s\S]*)<\/body>/);
+    if (bodyMatch) transformedTemplate = bodyMatch[1];
+    transformedTemplate = transformedTemplate
+      .replace(/<\/?html[^>]*>/gi, "")
+      .replace(/<head><\/head>/gi, "")
+      .trim();
+
+    for (const fieldName of Object.keys(fields)) {
+      transformedTemplate = transformedTemplate.replaceAll(`content.${fieldName}`, `${contentSource}.${fieldName}`);
+    }
+
+    const importLine = !isCollectionItem && !isPerPage && options.target === "astro-vue"
+      ? `import { useStrapiContent } from '~/src/composables/useStrapiContent';\n`
+      : "";
+    const contentSetup = isCollectionItem
+      ? `defineProps<{ item: Record<string, any> }>();`
+      : isPerPage
+      ? `const props = defineProps<{ content: Record<string, any> }>();
+const componentContent = props.content || {};`
+      : `const { content } = useStrapiContent('global');`;
+    const scriptSetup = `<script setup lang="ts">
+${importLine}${contentSetup}
+</script>`;
+
+    await fs.writeFile(filePath, `${scriptSetup}
+
+<template>
+${transformedTemplate}
+</template>
+`, "utf-8");
+  }
+}
+
+function restoreComponentTags(
+  html: string,
+  componentNames: string[],
+  perPageComponentNames: string[] = []
+): string {
+  let restored = html;
+  for (const name of componentNames) {
+    const lowered = name.toLowerCase();
+    const tag = perPageComponentNames.includes(name)
+      ? `<${name} :content="content" />`
+      : `<${name} />`;
+    restored = restored
+      .replace(new RegExp(`<!--COMPONENT:${name}-->`, "g"), tag)
+      .replace(new RegExp(`<${lowered}\\s*><\\/${lowered}>`, "g"), tag)
+      .replace(new RegExp(`<${lowered}\\s*\\/>`, "g"), tag);
+  }
+  return restored;
+}
+
+function restoreCollectionComponentTags(html: string): string {
+  return html.replace(
+    /<!--COLLECTION_COMPONENT:(\w+):([\w-]+)-->/g,
+    (_match, componentName, collectionName) =>
+      `<${componentName} v-for="(item, index) in content.${collectionName}" :key="index" :item="item" />`
+  );
+}
+
+function maskComponentTags(html: string, componentNames: string[]): string {
+  let masked = html;
+  for (const name of componentNames) {
+    masked = masked
+      .replace(new RegExp(`<${name}\\s*\\/>`, "g"), `<!--COMPONENT:${name}-->`)
+      .replace(new RegExp(`<${name}\\s*>\\s*<\\/${name}>`, "g"), `<!--COMPONENT:${name}-->`);
+  }
+  return masked;
+}
+
 /**
  * Transform all Vue pages in a directory
  */
 export async function transformAllVuePages(
   pagesDir: string,
-  manifest: CMSManifest
+  manifest: CMSManifest,
+  options: { target?: "nuxt" | "astro-vue" } = {}
 ): Promise<void> {
   const vueFiles = await glob("**/*.vue", { cwd: pagesDir, nodir: true });
 
@@ -251,7 +384,7 @@ export async function transformAllVuePages(
     if (file.endsWith(".vue")) {
       const pageName = htmlPathToPageId(file.replace(/\.vue$/i, ".html"));
       const vueFilePath = path.join(pagesDir, file);
-      await transformVueToReactive(vueFilePath, pageName, manifest);
+      await transformVueToReactive(vueFilePath, pageName, manifest, options);
     }
   }
 }

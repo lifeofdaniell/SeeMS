@@ -7,6 +7,8 @@ import path from 'path';
 import { glob } from 'glob';
 import { execSync } from 'child_process';
 import pc from 'picocolors';
+import { isResponsiveImageVariant } from './assets';
+import type { ProjectTarget } from './boilerplate';
 
 export interface AssetPaths {
   css: string[];      // Goes to assets/css/
@@ -32,7 +34,7 @@ export async function scanAssets(webflowDir: string): Promise<AssetPaths> {
 
   // Find images
   const imageFiles = await glob('images/**/*', { cwd: webflowDir, nodir: true });
-  assets.images = imageFiles;
+  assets.images = imageFiles.filter(file => !isResponsiveImageVariant(file));
 
   // Find fonts
   const fontFiles = await glob('fonts/**/*', { cwd: webflowDir, nodir: true });
@@ -163,26 +165,58 @@ export async function readHTMLFile(webflowDir: string, fileName: string): Promis
 export async function writeVueComponent(
   outputDir: string,
   fileName: string,
-  content: string
+  content: string,
+  target: ProjectTarget = 'nuxt',
+  cssFiles: string[] = [],
+  editorEnabled = false
 ): Promise<void> {
+  if (target === 'astro-vue') {
+    const componentDir = path.join(outputDir, 'src', 'components', 'pages');
+    const astroPagesDir = path.join(outputDir, 'src', 'pages');
+    const vueName = fileName.replace('.html', '.vue');
+    const astroName = fileName.replace('.html', '.astro');
+    const vuePath = path.join(componentDir, vueName);
+    const astroPath = path.join(astroPagesDir, astroName);
+    const relativeVueImport = ensureRelativeImport(path.relative(path.dirname(astroPath), vuePath));
+    const cssImports = cssFiles
+      .map(file => `import '${ensureRelativeImport(path.relative(path.dirname(astroPath), path.join(outputDir, 'assets', 'css', path.relative('css', file))))}';`)
+      .join('\n');
+    const editorScript = editorEnabled ? "\n<script>\n  import '../cms-editor';\n</script>\n" : "";
+
+    await fs.ensureDir(path.dirname(vuePath));
+    await fs.ensureDir(path.dirname(astroPath));
+    await fs.writeFile(vuePath, content, 'utf-8');
+    await fs.writeFile(astroPath, `---
+import Page from '${relativeVueImport}';
+${cssImports}
+---
+
+<Page client:load />
+${editorScript}
+`, 'utf-8');
+    return;
+  }
+
   const pagesDir = path.join(outputDir, 'pages');
-  
-  // Convert HTML path to Vue path
-  // e.g., press-release/article.html -> press-release/article.vue
   const vueName = fileName.replace('.html', '.vue');
   const targetPath = path.join(pagesDir, vueName);
 
-  // Ensure the directory exists
   await fs.ensureDir(path.dirname(targetPath));
-
   await fs.writeFile(targetPath, content, 'utf-8');
+}
+
+function ensureRelativeImport(importPath: string): string {
+  const normalized = importPath.split(path.sep).join('/');
+  return normalized.startsWith('.') ? normalized : `./${normalized}`;
 }
 
 /**
  * Format Vue files with Prettier
  */
-export async function formatVueFiles(outputDir: string): Promise<void> {
-  const pagesDir = path.join(outputDir, 'pages');
+export async function formatVueFiles(outputDir: string, target: ProjectTarget = 'nuxt'): Promise<void> {
+  const pagesDir = target === 'astro-vue'
+    ? path.join(outputDir, 'src', 'components', 'pages')
+    : path.join(outputDir, 'pages');
   
   try {
     console.log(pc.blue('\n✨ Formatting Vue files with Prettier...'));

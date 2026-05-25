@@ -18,15 +18,26 @@ import {
     writeEmbeddedStyles,
     addStrapiUrlToConfig,
 } from './config-updater';
-import { createEditorPlugin, createEditorContentComposable, createStrapiContentComposable, addEditorDependency, createSaveEndpoint, createPublishEndpoint, createStrapiBootstrap } from './editor-integration';
+import {
+    createAstroEditorClient,
+    createAstroSaveEndpoint,
+    createAstroStrapiContentComposable,
+    createEditorPlugin,
+    createEditorContentComposable,
+    createStrapiContentComposable,
+    addEditorDependency,
+    createSaveEndpoint,
+    createPublishEndpoint,
+    createStrapiBootstrap
+} from './editor-integration';
 import { setupBoilerplate } from './boilerplate';
 import { generateManifest, writeManifest } from './manifest';
-import { transformAllVuePages } from './vue-transformer';
+import { transformAllVuePages, transformSharedComponentsToReactive } from './vue-transformer';
 import { manifestToSchemas, getLinkComponentSchema } from './transformer';
 import { writeAllSchemas, createStrapiReadme, writeLinkComponentSchema } from './schema-writer';
 import { extractAllContent, formatForStrapi } from './content-extractor';
 import { writeSeedData, createSeedReadme } from './seed-writer';
-import { extractSharedComponents, replaceWithComponent, replaceComponentMarkers } from './component-extractor';
+import { extractSharedComponents, replaceWithComponent } from './component-extractor';
 import * as cheerio from 'cheerio';
 import { analyzeWebflowExport, createConversionReport, writeConversionReport } from './analyzer';
 import { loadSeeMSConfig, mergeConfig, normalizeConfig, writeSeeMSConfig } from './config';
@@ -36,6 +47,7 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
     const { inputDir, outputDir, boilerplate } = options;
     const loadedConfig = options.configPath ? await loadSeeMSConfig(options.configPath) : {};
     const config = normalizeConfig(mergeConfig(loadedConfig, options.config || {}));
+    const target = options.target || config.target || 'nuxt';
     const provider = options.cmsBackend || config.cms?.provider || 'strapi';
     const editorEnabled = options.editor ?? config.editor?.enabled ?? true;
     const shouldGenerateContent = options.generateContent !== false;
@@ -44,14 +56,14 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
         (config.collections || []).map(collection => [collection.className, collection.name || collection.className])
     );
 
-    console.log(pc.cyan('🚀 Starting Webflow to Nuxt conversion...'));
+    console.log(pc.cyan(`🚀 Starting Webflow to ${target === 'astro-vue' ? 'Astro + Vue' : 'Nuxt'} conversion...`));
     console.log(pc.dim(`Input: ${inputDir}`));
     console.log(pc.dim(`Output: ${outputDir}`));
 
     try {
         // Step 0: Analyze input and setup boilerplate
         const analysis = await analyzeWebflowExport(inputDir, config);
-        await setupBoilerplate(boilerplate, outputDir);
+        await setupBoilerplate(boilerplate, outputDir, target);
         await writeSeeMSConfig(outputDir, config);
 
         // Step 1: Scan for assets
@@ -75,11 +87,13 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
         // Step 5: Read and store HTML content (before converting to Vue)
         // We need this for content extraction later
         const htmlContentMap = new Map<string, string>();
+        const originalHtmlContentMap = new Map<string, string>();
 
         for (const htmlFile of htmlFiles) {
             const html = await readHTMLFile(inputDir, htmlFile);
             const pageName = htmlPathToPageId(htmlFile);
             htmlContentMap.set(pageName, html);
+            originalHtmlContentMap.set(pageName, html);
             console.log(pc.dim(`  Stored: ${pageName} from ${htmlFile}`));
         }
 
@@ -89,9 +103,13 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
             ? []
             : await extractSharedComponents(inputDir, outputDir, {
                 minOccurrences: config.components?.minOccurrences,
+                minPages: config.components?.minPages,
                 minSectionSize: config.components?.minSectionSize,
+                match: config.components?.match,
+                writeConfidence: config.components?.writeConfidence,
                 include: config.components?.include,
                 exclude: config.components?.exclude,
+                rules: config.components?.rules,
             });
 
         // Track which components are used per page
@@ -111,6 +129,9 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
                 const usedComponents: string[] = [];
 
                 for (const component of sharedComponents) {
+                    if (component.role === 'collection-item') {
+                        continue;
+                    }
                     // Check if this page has the component
                     if (component.pages.includes(pageName)) {
                         replaceWithComponent($, component.selector, component.name);
@@ -120,8 +141,9 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
                 }
 
                 if (modified) {
-                    // Serialize HTML and replace component markers with PascalCase tags
-                    const serializedHtml = replaceComponentMarkers($.html());
+                    // Keep component markers as comments until final Vue generation.
+                    // Cheerio parses self-closing custom tags as wrappers in HTML mode.
+                    const serializedHtml = $.html();
                     htmlContentMap.set(pageName, serializedHtml);
                     pageComponentMap.set(pageName, usedComponents);
                 }
@@ -154,16 +176,18 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
             const vueComponent = htmlToVueComponent(transformed, pageName, componentImports);
 
             // Write to pages directory (this will overwrite existing files)
-            await writeVueComponent(outputDir, htmlFile, vueComponent);
-            console.log(pc.green(`  ✓ Created ${htmlFile.replace('.html', '.vue')}`));
+            await writeVueComponent(outputDir, htmlFile, vueComponent, target, assets.css, editorEnabled);
+            console.log(pc.green(`  ✓ Created ${htmlFile.replace('.html', target === 'astro-vue' ? '.astro + .vue' : '.vue')}`));
         }
 
         // Step 7: Format Vue files with Prettier
-        await formatVueFiles(outputDir);
+        await formatVueFiles(outputDir, target);
 
         // Step 8: Generate CMS manifest
         console.log(pc.blue('\n🔍 Analyzing pages for CMS fields...'));
-        const pagesDir = path.join(outputDir, 'pages');
+        const pagesDir = target === 'astro-vue'
+            ? path.join(outputDir, 'src', 'components', 'pages')
+            : path.join(outputDir, 'pages');
         const pageRoutes = Object.fromEntries(
             htmlFiles.map((htmlFile) => {
                 const info = getPageRouteInfo(htmlFile);
@@ -174,6 +198,7 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
             collectionClasses,
             collectionNames,
             sharedComponents,
+            componentsDir: path.join(outputDir, 'components'),
             ignoreSelectors: config.ignore?.selectors,
             ignoreClasses: config.ignore?.classes,
             provider,
@@ -194,9 +219,20 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
         console.log(pc.green(`  ✓ Detected ${totalCollections} collections`));
         console.log(pc.green('  ✓ Generated cms-manifest.json'));
 
+        console.log(pc.blue('\n🔌 Generating content runtime...'));
+        if (target === 'nuxt') {
+            await createEditorContentComposable(outputDir);
+            await createStrapiContentComposable(outputDir, manifest);
+            await addStrapiUrlToConfig(outputDir);
+        } else {
+            await createAstroStrapiContentComposable(outputDir, manifest);
+        }
+        console.log(pc.green('  ✓ Content runtime generated'));
+
         // Step 8.5: Transform Vue files to use reactive content
         console.log(pc.blue('\n⚡ Transforming Vue files to reactive templates...'));
-        await transformAllVuePages(pagesDir, manifest);
+        await transformAllVuePages(pagesDir, manifest, { target });
+        await transformSharedComponentsToReactive(path.join(outputDir, 'components'), manifest, { target });
         console.log(pc.green(`  ✓ Transformed ${Object.keys(manifest.pages).length} pages to use Vue template syntax`));
 
         // Step 9: Extract content from original HTML
@@ -206,7 +242,7 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
 
         let seedData: Record<string, any> = {};
         if (shouldGenerateContent) {
-            const extractedContent = extractAllContent(htmlContentMap, manifest);
+            const extractedContent = extractAllContent(originalHtmlContentMap, manifest);
             seedData = formatForStrapi(extractedContent);
 
             await writeSeedData(outputDir, seedData);
@@ -253,38 +289,42 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
         }
 
         // Step 12: Generate/overwrite webflow-assets.ts
-        console.log(pc.blue('\n🔧 Generating webflow-assets.ts plugin...'));
-        await writeWebflowAssetPlugin(outputDir, assets.css);
-        console.log(pc.green('  ✓ Plugin generated (existing file overwritten)'));
+        if (target === 'nuxt') {
+            console.log(pc.blue('\n🔧 Generating webflow-assets.ts plugin...'));
+            await writeWebflowAssetPlugin(outputDir, assets.css);
+            console.log(pc.green('  ✓ Plugin generated (existing file overwritten)'));
 
-        // Step 13: Update nuxt.config.ts
-        console.log(pc.blue('\n⚙️  Updating nuxt.config.ts...'));
-        try {
-            await updateNuxtConfig(outputDir, assets.css);
-            console.log(pc.green('  ✓ Config updated'));
-        } catch (error) {
-            console.log(pc.yellow('  ⚠  Could not update nuxt.config.ts automatically'));
-            console.log(pc.dim('    Please add CSS files manually'));
+            // Step 13: Update nuxt.config.ts
+            console.log(pc.blue('\n⚙️  Updating nuxt.config.ts...'));
+            try {
+                await updateNuxtConfig(outputDir, assets.css);
+                console.log(pc.green('  ✓ Config updated'));
+            } catch (error) {
+                console.log(pc.yellow('  ⚠  Could not update nuxt.config.ts automatically'));
+                console.log(pc.dim('    Please add CSS files manually'));
+            }
+        } else {
+            console.log(pc.dim('\n🔧 Skipped Nuxt asset plugin; Astro pages import CSS directly'));
         }
 
         if (editorEnabled) {
             console.log(pc.blue('\n🎨 Setting up editor overlay...'));
-            await createEditorPlugin(outputDir);
-            await createEditorContentComposable(outputDir);
-            await createStrapiContentComposable(outputDir);
+            if (target === 'nuxt') {
+                await createEditorPlugin(outputDir);
+                await createSaveEndpoint(outputDir);
+                await createPublishEndpoint(outputDir);
+                console.log(pc.green('  ✓ Nuxt editor plugin created'));
+                console.log(pc.green('  ✓ Nuxt save/publish endpoints created'));
+            } else {
+                await createAstroEditorClient(outputDir);
+                await createAstroSaveEndpoint(outputDir);
+                console.log(pc.green('  ✓ Astro editor client created'));
+                console.log(pc.green('  ✓ Astro save/publish endpoints created'));
+            }
             await addEditorDependency(outputDir);
-            await createSaveEndpoint(outputDir);
-            await createPublishEndpoint(outputDir);
             await createStrapiBootstrap(outputDir);
-            await addStrapiUrlToConfig(outputDir);
-            console.log(pc.green('  ✓ Editor plugin created'));
-            console.log(pc.green('  ✓ Editor content composable created'));
-            console.log(pc.green('  ✓ Strapi content composable created'));
             console.log(pc.green('  ✓ Editor dependency added'));
-            console.log(pc.green('  ✓ Save endpoint created'));
-            console.log(pc.green('  ✓ Publish endpoint created'));
             console.log(pc.green('  ✓ Strapi bootstrap file generated'));
-            console.log(pc.green('  ✓ Strapi config added'));
         } else {
             console.log(pc.dim('\n🎨 Editor overlay disabled by config'));
         }

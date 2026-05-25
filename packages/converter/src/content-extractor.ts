@@ -5,10 +5,11 @@
 
 import type { CMSManifest, PageManifest, LinkFieldValue } from '@see-ms/types';
 import * as cheerio from 'cheerio';
-import path from 'path';
+import { isLikelyImagePath, normalizeImageSeedPath } from './assets';
 
 export interface ExtractedContent {
     pages: Record<string, PageContent>;
+    global?: PageContent;
 }
 
 /**
@@ -161,6 +162,17 @@ export function extractAllContent(
         }
     }
 
+    if (manifest.global?.fields) {
+        const firstPage = Object.keys(manifest.pages)[0];
+        const firstHtml = firstPage ? htmlFiles.get(firstPage) : undefined;
+        if (firstHtml) {
+            extractedContent.global = extractContentFromHTML(firstHtml, "global", {
+                fields: manifest.global.fields,
+                collections: {}
+            });
+        }
+    }
+
     return { ...extractedContent, manifest };
 }
 
@@ -169,20 +181,7 @@ export function extractAllContent(
  * Converts absolute/relative paths to public asset paths
  */
 export function normalizeImagePath(imageSrc: string): string {
-    if (!imageSrc) return '';
-
-    // If it's already a relative path starting with /, keep it
-    if (imageSrc.startsWith('/')) return imageSrc;
-
-    // If it's in images folder, normalize to /images/filename
-    const filename = path.basename(imageSrc);
-
-    if (imageSrc.includes('images/')) {
-        return `/images/${filename}`;
-    }
-
-    // Default: assume it's in public root
-    return `/${filename}`;
+    return normalizeImageSeedPath(imageSrc);
 }
 
 /**
@@ -207,7 +206,7 @@ export function formatForStrapi(extracted: ExtractedContent): Record<string, any
                 if (isLinkValue(value)) {
                     // Keep link objects as-is for Strapi component
                     formattedFields[fieldName] = value;
-                } else if (fieldName.includes('image') || fieldName.includes('bg')) {
+                } else if (fieldName.includes('image') || fieldName.includes('img') || fieldName.includes('bg') || isLikelyImagePath(value)) {
                     // Normalize image paths
                     formattedFields[fieldName] = normalizeImagePath(value);
                 } else {
@@ -227,7 +226,7 @@ export function formatForStrapi(extracted: ExtractedContent): Record<string, any
                     if (isLinkValue(value)) {
                         // Keep link objects as-is for Strapi component
                         formattedItem[fieldName] = value;
-                    } else if (fieldName === 'image' || fieldName.includes('image')) {
+                    } else if (fieldName === 'image' || fieldName.includes('image') || fieldName.includes('img') || isLikelyImagePath(value)) {
                         // Normalize image paths
                         formattedItem[fieldName] = normalizeImagePath(value);
                     } else {
@@ -240,6 +239,20 @@ export function formatForStrapi(extracted: ExtractedContent): Record<string, any
 
             seedData[collectionName] = formattedItems;
         }
+    }
+
+    if (extracted.global && Object.keys(extracted.global.fields).length > 0) {
+        const formattedFields: Record<string, any> = {};
+        for (const [fieldName, value] of Object.entries(extracted.global.fields)) {
+            if (isLinkValue(value)) {
+                formattedFields[fieldName] = value;
+            } else if (fieldName.includes('image') || fieldName.includes('img') || fieldName.includes('bg') || isLikelyImagePath(value)) {
+                formattedFields[fieldName] = normalizeImagePath(value);
+            } else {
+                formattedFields[fieldName] = value;
+            }
+        }
+        seedData.global = formattedFields;
     }
 
     return seedData;

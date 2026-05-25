@@ -253,6 +253,13 @@ function hasLinkFields(manifest: CMSManifest): boolean {
             if (field.type === 'link') return true;
         }
     }
+    if (manifest.global?.components) {
+        for (const component of Object.values(manifest.global.components)) {
+            for (const field of Object.values(component.fields || {})) {
+                if (field.type === 'link') return true;
+            }
+        }
+    }
     return false;
 }
 

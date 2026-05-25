@@ -2,11 +2,11 @@
  * Manifest generation
  */
 
-import type { CMSManifest, PageManifest } from '@see-ms/types';
+import type { CMSManifest, PageManifest, CollectionFieldMapping } from '@see-ms/types';
 import type { SharedComponent } from '@see-ms/types';
 import fs from 'fs-extra';
 import path from 'path';
-import { analyzeVuePages, DetectionOptions } from './detector';
+import { analyzeVuePages, detectEditableFields, DetectionOptions } from './detector';
 
 /**
  * Manifest generation options
@@ -18,6 +18,8 @@ export interface ManifestOptions {
   collectionNames?: Record<string, string>;
   /** Shared components extracted during conversion */
   sharedComponents?: SharedComponent[];
+  /** Directory containing extracted shared Vue components */
+  componentsDir?: string;
   /** Selectors to ignore during field detection */
   ignoreSelectors?: string[];
   /** Classes to ignore during field detection */
@@ -36,7 +38,20 @@ export async function generateManifest(
   options: ManifestOptions = {}
 ): Promise<CMSManifest> {
   // Build detection options
+  const collectionItemSelectors = options.sharedComponents
+    ?.filter((component) => component.role === "collection-item")
+    .map((component) => component.selector) || [];
+
   const detectionOptions: DetectionOptions = {
+    collectionClasses: options.collectionClasses,
+    ignoreSelectors: [
+      ...(options.ignoreSelectors || []),
+      ...collectionItemSelectors
+    ],
+    ignoreClasses: options.ignoreClasses,
+  };
+
+  const componentDetectionOptions: DetectionOptions = {
     collectionClasses: options.collectionClasses,
     ignoreSelectors: options.ignoreSelectors,
     ignoreClasses: options.ignoreClasses,
@@ -93,7 +108,96 @@ export async function generateManifest(
     }
   };
 
+  if (options.sharedComponents?.length && options.componentsDir) {
+    const globalFields: NonNullable<CMSManifest["global"]>["fields"] = {};
+    const components = manifest.global?.components || {};
+
+    for (const component of options.sharedComponents) {
+      const componentPath = path.join(options.componentsDir, `${component.name}.vue`);
+      if (!(await fs.pathExists(componentPath))) continue;
+
+      const content = await fs.readFile(componentPath, "utf-8");
+      const templateMatch = content.match(/<template>([\s\S]*?)<\/template>/);
+      if (!templateMatch) continue;
+
+      const detection = detectEditableFields(templateMatch[1], componentDetectionOptions);
+      const prefixedFields = Object.fromEntries(
+        Object.entries(detection.fields).map(([fieldName, field]) => [
+          `${component.name}_${fieldName}`,
+          field
+        ])
+      );
+      const collectionFields = Object.fromEntries(
+        Object.entries(detection.fields).map(([fieldName, field]) => [
+          fieldName,
+          {
+            selector: field.selector,
+            type: field.type,
+            attribute: field.attribute
+          } satisfies CollectionFieldMapping
+        ])
+      );
+
+      const contentMode = component.contentMode || "shared-global";
+      const role = component.role || "shared-section";
+
+      components[component.name] = {
+        ...component,
+        role,
+        contentMode,
+        fields: role === "collection-item" ? detection.fields : prefixedFields
+      };
+
+      if (role === "collection-item") {
+        for (const pageId of component.pages || []) {
+          if (!manifest.pages[pageId]) continue;
+          const collectionName = resolveCollectionName(component.collectionName || toCollectionName(component.name), pageId);
+          manifest.pages[pageId].collections = {
+            ...manifest.pages[pageId].collections,
+            [collectionName]: {
+              selector: component.selector,
+              fields: collectionFields,
+              componentName: component.name,
+              storage: component.collectionStorage || "collection-type"
+            }
+          };
+        }
+      } else if (contentMode === "per-page") {
+        for (const pageId of component.pages || []) {
+          if (!manifest.pages[pageId]) continue;
+          manifest.pages[pageId].fields = {
+            ...manifest.pages[pageId].fields,
+            ...prefixedFields
+          };
+        }
+      } else if (contentMode === "shared-global" || contentMode === "auto") {
+        Object.assign(globalFields!, prefixedFields);
+      }
+    }
+
+    if (manifest.global) {
+      manifest.global.components = components;
+      if (Object.keys(globalFields || {}).length > 0) {
+        manifest.global.fields = globalFields;
+      }
+    }
+  }
+
   return manifest;
+}
+
+function toCollectionName(name: string): string {
+  const base = name
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[-\s]+/g, "_")
+    .toLowerCase();
+
+  if (base.endsWith("s")) return base;
+  return `${base}s`;
+}
+
+function resolveCollectionName(collectionName: string, pageId: string): string {
+  return collectionName === pageId ? `${collectionName}_items` : collectionName;
 }
 
 /**

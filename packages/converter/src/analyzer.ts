@@ -39,9 +39,12 @@ export async function analyzeWebflowExport(
     minSectionSize: componentConfig.minSectionSize
   });
   const componentCandidates = findSharedSections(parsedPages, {
+    match: componentConfig.match,
     minOccurrences: componentConfig.minOccurrences,
+    minPages: componentConfig.minPages,
     include: componentConfig.include,
-    exclude: componentConfig.exclude
+    exclude: componentConfig.exclude,
+    rules: componentConfig.rules
   }).map((component) => ({
     name: component.name,
     selector: component.selector,
