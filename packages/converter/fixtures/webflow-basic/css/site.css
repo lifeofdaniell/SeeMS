@@ -1,0 +1,14 @@
+.site-nav {
+  display: flex;
+  gap: 1rem;
+}
+
+.hero,
+.team-hero {
+  padding: 4rem 2rem;
+}
+
+.blog-card {
+  border: 1px solid #ddd;
+  padding: 1rem;
+}

@@ -21,6 +21,10 @@ export interface ManifestPage {
 export interface CMSManifest {
   version: string;
   pages: Record<string, ManifestPage>;
+  global?: {
+    fields?: Record<string, ManifestField>;
+    components?: Record<string, any>;
+  };
 }
 
 export class ManifestLoader {
@@ -93,9 +97,10 @@ export class ManifestLoader {
    */
   public getEditableFields(pageName: string): Record<string, ManifestField> {
     const fields = this.getPageFields(pageName);
-    if (!fields) return {};
+    const globalFields = this.getManifest().global?.fields || {};
+    if (!fields) return globalFields;
 
-    return Object.entries(fields).reduce((acc, [key, field]) => {
+    return Object.entries({ ...globalFields, ...fields }).reduce((acc, [key, field]) => {
       if (field.editable) {
         acc[key] = field;
       }

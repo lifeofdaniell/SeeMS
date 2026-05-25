@@ -4,10 +4,14 @@
  */
 
 export { convertWebflowExport } from './converter';
+export { analyzeWebflowExport, createConversionReport, renderReportMarkdown, writeConversionReport } from './analyzer';
+export { loadSeeMSConfig, mergeConfig, normalizeConfig, writeSeeMSConfig } from './config';
+export { completeSetup, scaffoldStrapiProject } from './strapi-setup';
 export { detectEditableFields } from './detector';
 export { generateManifest, readManifest } from './manifest';
 export { generateSchemas } from './generator';
-export { manifestToSchemas } from './transformer';
+export { manifestToSchemas, getLinkComponentSchema, LINK_COMPONENT_SCHEMA } from './transformer';
 export { setupBoilerplate } from './boilerplate';
 export { transformAllVuePages } from './vue-transformer';
-export type { ConversionOptions } from '@see-ms/types';
+export { extractSharedComponents, parseAllPages, findSharedSections } from './component-extractor';
+export type { ConversionOptions, ConversionReport, SeeMSConfig, SharedComponent } from '@see-ms/types';

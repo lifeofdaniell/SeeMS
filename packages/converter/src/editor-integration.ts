@@ -4,6 +4,20 @@
 
 import fs from "fs-extra";
 import path from "path";
+import type { CMSManifest } from "@see-ms/types";
+
+function getPageCollections(manifest?: CMSManifest): Record<string, string[]> {
+  if (!manifest) return {};
+
+  return Object.fromEntries(
+    Object.entries(manifest.pages).map(([pageName, page]) => [
+      pageName,
+      Object.entries(page.collections || {})
+        .filter(([, collection]) => (collection as any).storage !== "page-repeatable")
+        .map(([collectionName]) => collectionName)
+    ])
+  );
+}
 
 /**
  * Create global editor state composable
@@ -117,19 +131,23 @@ export function useEditorContent(pageName?: string) {
 /**
  * Create composable for fetching Strapi content
  */
-export async function createStrapiContentComposable(outputDir: string): Promise<void> {
+export async function createStrapiContentComposable(outputDir: string, manifest?: CMSManifest): Promise<void> {
   const composablesDir = path.join(outputDir, "composables");
   await fs.ensureDir(composablesDir);
+  const pageCollections = JSON.stringify(getPageCollections(manifest), null, 2);
 
   const composableContent = `/**
  * Composable to fetch content from Strapi based on CMS manifest
  * Integrates with editor state for preview mode
  */
 
+const PAGE_COLLECTIONS: Record<string, string[]> = ${pageCollections};
+
 export function useStrapiContent(pageName: string) {
   const config = useRuntimeConfig();
   const strapiUrl = config.public.strapiUrl || 'http://localhost:1337';
   const editorContent = useEditorContent(pageName);
+  const collectionNames = PAGE_COLLECTIONS[pageName] || [];
 
   // Helper to transform Strapi image objects to URL strings
   const transformStrapiImages = (data: any, baseUrl: string): any => {
@@ -188,6 +206,25 @@ export function useStrapiContent(pageName: string) {
     }
   );
 
+  const collectionFetches = collectionNames.map((collectionName) =>
+    useFetch<any>(
+      \`\${strapiUrl}/api/\${collectionName}\`,
+      {
+        key: \`strapi-\${pageName}-collection-\${collectionName}\`,
+        query: {
+          populate: '*',
+        },
+        transform: (response) => {
+          const data = response?.data || response || [];
+          if (Array.isArray(data)) {
+            return data.map((item) => transformStrapiImages(item, strapiUrl));
+          }
+          return transformStrapiImages(data, strapiUrl);
+        },
+      }
+    )
+  );
+
   // Initialize editor state with Strapi data when fetched
   // This runs in both normal AND preview mode to ensure initial content is available
   watch(
@@ -205,12 +242,25 @@ export function useStrapiContent(pageName: string) {
   // In preview mode: use editor state
   // In normal mode: use Strapi data (and sync to editor state)
   const content = computed(() => {
+    const collections = Object.fromEntries(
+      collectionNames.map((collectionName, index) => [
+        collectionName,
+        collectionFetches[index]?.data.value || []
+      ])
+    );
+
     if (editorContent.isPreviewMode.value) {
       // Use editor state in preview mode
-      return editorContent.getPageContent(pageName);
+      return {
+        ...editorContent.getPageContent(pageName),
+        ...collections,
+      };
     } else {
       // Use Strapi data in normal mode
-      return strapiData.value || editorContent.getPageContent(pageName);
+      return {
+        ...(strapiData.value || editorContent.getPageContent(pageName)),
+        ...collections,
+      };
     }
   });
 
@@ -238,6 +288,8 @@ export async function createEditorPlugin(outputDir: string): Promise<void> {
 
 /**
  * Disable Lenis smooth scroll to allow native scrolling in edit mode
+ * Note: The primary approach is to conditionally render <VueLenis> in the layout.
+ * This function serves as a fallback for existing projects that haven't been updated.
  */
 function disableLenisInEditMode() {
   try {
@@ -245,28 +297,48 @@ function disableLenisInEditMode() {
     const lenisInstances = [
       (window as any).lenis,
       (window as any).__lenis,
-      document.querySelector('.lenis'),
+      (window as any).Lenis,
     ];
 
     for (const lenis of lenisInstances) {
+      if (lenis && typeof lenis.stop === 'function') {
+        lenis.stop();
+      }
       if (lenis && typeof lenis.destroy === 'function') {
         lenis.destroy();
         return;
       }
     }
 
-    // Check for Vue Lenis component instances
-    const lenisElements = document.querySelectorAll('[data-lenis], .lenis');
-    if (lenisElements.length > 0) {
-      // Try to find and destroy via data attributes or component instances
-      lenisElements.forEach((el: any) => {
-        if (el.__lenis && typeof el.__lenis.destroy === 'function') {
-          el.__lenis.destroy();
+    // Check for Vue Lenis component instances via refs
+    // VueLenis stores the instance in the component's exposed properties
+    const lenisElements = document.querySelectorAll('[data-lenis], .lenis, [data-lenis-prevent]');
+    lenisElements.forEach((el: any) => {
+      // Try various ways Vue Lenis might store the instance
+      const possibleInstances = [
+        el.__lenis,
+        el._lenis,
+        el.$lenis,
+        el.__vue__?.exposed?.lenis,
+        el.__vueParentComponent?.exposed?.lenis,
+      ];
+
+      for (const instance of possibleInstances) {
+        if (instance && typeof instance.stop === 'function') {
+          instance.stop();
         }
-      });
-    }
+        if (instance && typeof instance.destroy === 'function') {
+          instance.destroy();
+          return;
+        }
+      }
+    });
+
+    // Also remove lenis-related classes from html/body that might affect scrolling
+    document.documentElement.classList.remove('lenis', 'lenis-smooth');
+    document.body.classList.remove('lenis', 'lenis-smooth');
   } catch (error) {
-    // Silently fail - Lenis may not be present
+    // Silently fail - Lenis may not be present or already disabled via layout
   }
 }
 
@@ -491,7 +563,7 @@ export default defineEventHandler(async (event) => {
     }
 
     // Load manifest to understand field mappings
-    const manifestPath = path.join(process.cwd(), 'cms-manifest.json');
+    const manifestPath = path.join(process.cwd(), 'public', 'cms-manifest.json');
     let manifest;
     try {
       const manifestContent = fs.readFileSync(manifestPath, 'utf-8');
@@ -878,7 +950,7 @@ export default defineEventHandler(async (event) => {
     }
 
     // Load manifest to understand field mappings
-    const manifestPath = path.join(process.cwd(), 'cms-manifest.json');
+    const manifestPath = path.join(process.cwd(), 'public', 'cms-manifest.json');
     let manifest;
     try {
       const manifestContent = fs.readFileSync(manifestPath, 'utf-8');
@@ -1038,4 +1110,335 @@ export default defineEventHandler(async (event) => {
 
   const endpointPath = path.join(serverDir, "publish.post.ts");
   await fs.writeFile(endpointPath, endpointContent, "utf-8");
+}
+
+export async function createAstroStrapiContentComposable(outputDir: string, manifest?: CMSManifest): Promise<void> {
+  const composablesDir = path.join(outputDir, "src", "composables");
+  await fs.ensureDir(composablesDir);
+  const pageCollections = JSON.stringify(getPageCollections(manifest), null, 2);
+
+  const content = `import { computed, reactive, ref, onMounted } from 'vue';
+
+const PAGE_COLLECTIONS: Record<string, string[]> = ${pageCollections};
+
+const editorState = reactive<{
+  content: Record<string, Record<string, any>>;
+  hasChanges: Record<string, boolean>;
+}>({
+  content: {},
+  hasChanges: {},
+});
+
+function getStrapiUrl() {
+  return import.meta.env.PUBLIC_STRAPI_URL || 'http://localhost:1337';
+}
+
+function transformStrapiImages(data: any, baseUrl: string): any {
+  if (!data || typeof data !== 'object') return data;
+  if (Array.isArray(data)) return data.map((item) => transformStrapiImages(item, baseUrl));
+  if ('url' in data && ('mime' in data || 'formats' in data)) {
+    return data.url.startsWith('http') ? data.url : \`\${baseUrl}\${data.url}\`;
+  }
+
+  const transformed: Record<string, any> = {};
+  for (const [key, value] of Object.entries(data)) {
+    transformed[key] = transformStrapiImages(value, baseUrl);
+  }
+  return transformed;
+}
+
+export function useStrapiContent(pageName: string) {
+  const strapiUrl = getStrapiUrl();
+  const strapiData = ref<Record<string, any>>({});
+  const isPreviewMode = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('preview') === 'true';
+  const collectionNames = PAGE_COLLECTIONS[pageName] || [];
+
+  function initializePageContent(page: string, content: Record<string, any>) {
+    if (!editorState.content[page]) {
+      editorState.content[page] = { ...content };
+    }
+  }
+
+  function getPageContent(page: string) {
+    return editorState.content[page] || {};
+  }
+
+  function updateField(page: string, fieldName: string, value: any) {
+    if (!editorState.content[page]) editorState.content[page] = {};
+    editorState.content[page][fieldName] = value;
+    editorState.hasChanges[page] = true;
+  }
+
+  onMounted(async () => {
+    try {
+      const response = await fetch(\`\${strapiUrl}/api/\${pageName}?populate=*\`);
+      if (!response.ok) return;
+      const json = await response.json();
+      const data = transformStrapiImages(json?.data || json, strapiUrl);
+      const collections = Object.fromEntries(
+        await Promise.all(collectionNames.map(async (collectionName) => {
+          const collectionResponse = await fetch(\`\${strapiUrl}/api/\${collectionName}?populate=*\`);
+          if (!collectionResponse.ok) return [collectionName, []];
+          const collectionJson = await collectionResponse.json();
+          const collectionData = collectionJson?.data || collectionJson || [];
+          return [
+            collectionName,
+            Array.isArray(collectionData)
+              ? collectionData.map((item) => transformStrapiImages(item, strapiUrl))
+              : transformStrapiImages(collectionData, strapiUrl)
+          ];
+        }))
+      );
+      strapiData.value = { ...(data || {}), ...collections };
+      initializePageContent(pageName, strapiData.value);
+    } catch (error) {
+      console.error('[SeeMS] Failed to fetch Strapi content', error);
+    }
+
+    (window as any).__editorState = {
+      ...editorState,
+      getPageContent,
+      updateField,
+      initializePageContent,
+    };
+  });
+
+  const content = computed(() => {
+    return isPreviewMode ? getPageContent(pageName) : (strapiData.value || getPageContent(pageName));
+  });
+
+  return { content };
+}
+`;
+
+  await fs.writeFile(path.join(composablesDir, "useStrapiContent.ts"), content, "utf-8");
+}
+
+export async function createAstroEditorClient(outputDir: string): Promise<void> {
+  const srcDir = path.join(outputDir, "src");
+  await fs.ensureDir(srcDir);
+
+  const content = `/**
+ * Astro client entry for the SeeMS inline editor.
+ */
+async function initSeeMSEditor() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('preview') !== 'true') return;
+
+  const {
+    initEditor,
+    createAuthManager,
+    showLoginModal,
+    createDraftStorage,
+    createURLStateManager,
+    createManifestLoader,
+    createNavigationGuard,
+    getCurrentPageFromRoute,
+    createToolbar,
+  } = await import('@see-ms/editor-overlay');
+
+  const strapiUrl = import.meta.env.PUBLIC_STRAPI_URL || 'http://localhost:1337';
+  const urlState = createURLStateManager();
+  urlState.setState({ preview: true });
+
+  const authManager = createAuthManager({
+    strapiUrl,
+    storageKey: 'cms_editor_token',
+  });
+  const draftStorage = createDraftStorage();
+  const manifestLoader = createManifestLoader();
+
+  try {
+    await manifestLoader.load();
+  } catch (error) {
+    console.error('[CMS Editor] Failed to load manifest:', error);
+    return;
+  }
+
+  let currentPage = getCurrentPageFromRoute();
+  if (!currentPage) {
+    currentPage = manifestLoader.getPageFromRoute(window.location.pathname);
+  }
+  if (!currentPage) {
+    console.error('[CMS Editor] Could not determine current page');
+    return;
+  }
+
+  let token = authManager.getToken();
+  if (!token || !await authManager.verifyToken(token)) {
+    try {
+      token = await showLoginModal(authManager);
+    } catch {
+      urlState.clearPreviewMode();
+      return;
+    }
+  }
+
+  const navigationGuard = createNavigationGuard({
+    showToast: true,
+    toastMessage: 'Navigation disabled in edit mode',
+  });
+  navigationGuard.enable();
+
+  const editor = initEditor({
+    apiEndpoint: '/api/cms/save',
+    authToken: token,
+    richText: true,
+    manifestLoader,
+    draftStorage,
+    currentPage,
+  });
+
+  await editor.enable();
+
+  const toolbar = await createToolbar(editor, {
+    draftStorage,
+    urlState,
+    navigationGuard,
+    manifestLoader,
+    currentPage,
+  });
+  document.body.appendChild(toolbar);
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initSeeMSEditor, { once: true });
+} else {
+  initSeeMSEditor();
+}
+`;
+
+  await fs.writeFile(path.join(srcDir, "cms-editor.ts"), content, "utf-8");
+}
+
+export async function createAstroSaveEndpoint(outputDir: string): Promise<void> {
+  const endpointDir = path.join(outputDir, "src", "pages", "api", "cms");
+  await fs.ensureDir(endpointDir);
+
+  await fs.writeFile(path.join(endpointDir, "save.ts"), astroEndpointContent(false), "utf-8");
+  await fs.writeFile(path.join(endpointDir, "publish.ts"), astroEndpointContent(true), "utf-8");
+}
+
+function astroEndpointContent(batchPublish: boolean): string {
+  return `import type { APIRoute } from 'astro';
+import fs from 'node:fs';
+import path from 'node:path';
+
+export const prerender = false;
+
+const strapiUrl = import.meta.env.PUBLIC_STRAPI_URL || 'http://localhost:1337';
+
+function json(status: number, body: unknown) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+async function verifyToken(token: string) {
+  const adminResponse = await fetch(\`\${strapiUrl}/admin/users/me\`, {
+    headers: { Authorization: \`Bearer \${token}\` },
+  });
+  if (adminResponse.ok) return { user: await adminResponse.json(), isAdminToken: true };
+
+  const userResponse = await fetch(\`\${strapiUrl}/api/users/me\`, {
+    headers: { Authorization: \`Bearer \${token}\` },
+  });
+  if (userResponse.ok) return { user: await userResponse.json(), isAdminToken: false };
+
+  throw new Error('Invalid or expired token');
+}
+
+function loadManifest() {
+  const manifestPath = path.join(process.cwd(), 'public', 'cms-manifest.json');
+  return JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+}
+
+function filterFields(pageConfig: any, fields: Record<string, any>) {
+  const data: Record<string, any> = {};
+  for (const [fieldName, value] of Object.entries(fields || {})) {
+    if (pageConfig?.fields?.[fieldName]) data[fieldName] = value;
+  }
+  return data;
+}
+
+async function writePage(page: string, fields: Record<string, any>, token: string, isAdminToken: boolean, publish: boolean) {
+  const manifest = loadManifest();
+  const pageConfig = manifest.pages[page];
+  if (!pageConfig) throw new Error(\`Page "\${page}" not found in manifest\`);
+  const data = filterFields(pageConfig, fields);
+
+  if (isAdminToken) {
+    const endpoint = \`\${strapiUrl}/content-manager/single-types/api::\${page}.\${page}\`;
+    const update = await fetch(endpoint, {
+      method: 'PUT',
+      headers: { Authorization: \`Bearer \${token}\`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!update.ok) throw new Error(await update.text());
+
+    if (publish) {
+      const publishResponse = await fetch(\`\${endpoint}/actions/publish\`, {
+        method: 'POST',
+        headers: { Authorization: \`Bearer \${token}\`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      if (!publishResponse.ok) throw new Error(await publishResponse.text());
+    }
+    return;
+  }
+
+  const update = await fetch(\`\${strapiUrl}/api/\${page}\`, {
+    method: 'PUT',
+    headers: { Authorization: \`Bearer \${token}\`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ data }),
+  });
+  if (!update.ok) throw new Error(await update.text());
+
+  if (publish) {
+    const publishResponse = await fetch(\`\${strapiUrl}/api/\${page}/publish\`, {
+      method: 'POST',
+      headers: { Authorization: \`Bearer \${token}\`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    if (!publishResponse.ok) throw new Error(await publishResponse.text());
+  }
+}
+
+export const POST: APIRoute = async ({ request }) => {
+  const authHeader = request.headers.get('authorization');
+  if (!authHeader?.startsWith('Bearer ')) {
+    return json(401, { success: false, message: 'Missing authorization header' });
+  }
+
+  const token = authHeader.slice(7);
+  try {
+    const { user, isAdminToken } = await verifyToken(token);
+    const body = await request.json();
+${batchPublish ? `    const pages = Array.isArray(body.pages) ? body.pages : [];
+    const results = await Promise.allSettled(
+      pages.map(({ page, fields }: any) => writePage(page, fields, token, isAdminToken, true))
+    );
+    const failed = results
+      .map((result, index) => ({ result, page: pages[index]?.page }))
+      .filter(({ result }) => result.status === 'rejected')
+      .map(({ result, page }) => ({ page, error: result.status === 'rejected' ? result.reason?.message : 'Unknown error' }));
+    return json(200, {
+      success: failed.length === 0,
+      message: \`Published \${pages.length - failed.length} of \${pages.length} pages\`,
+      failed,
+      user,
+    });` : `    if (!body.page || !body.fields) {
+      return json(400, { success: false, message: 'Missing page or fields' });
+    }
+    await writePage(body.page, body.fields, token, isAdminToken, body.isDraft === false);
+    return json(200, { success: true, message: 'Changes saved successfully', page: body.page, isDraft: body.isDraft !== false, user });`}
+  } catch (error: any) {
+    return json(error.message === 'Invalid or expired token' ? 401 : 500, {
+      success: false,
+      message: error.message || 'Failed to save CMS changes',
+    });
+  }
+};
+`;
 }

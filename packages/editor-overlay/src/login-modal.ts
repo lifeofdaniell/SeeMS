@@ -40,6 +40,7 @@ export function createLoginModal(config: LoginModalConfig): HTMLElement {
     right: 0;
     height: 64px;
     background: white;
+    color: #1f2937;
     border-top: 1px solid #e5e7eb;
     box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.1);
     z-index: 10001;

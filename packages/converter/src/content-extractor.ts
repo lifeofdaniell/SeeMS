@@ -3,21 +3,43 @@
  * Extracts actual content values from HTML based on cms-manifest selectors
  */
 
-import type { CMSManifest, PageManifest } from '@see-ms/types';
+import type { CMSManifest, PageManifest, LinkFieldValue } from '@see-ms/types';
 import * as cheerio from 'cheerio';
-import path from 'path';
+import { isLikelyImagePath, normalizeImageSeedPath } from './assets';
 
 export interface ExtractedContent {
     pages: Record<string, PageContent>;
+    global?: PageContent;
 }
 
+/**
+ * Field value can be a string or a link object
+ */
+export type FieldValue = string | LinkFieldValue;
+
 export interface PageContent {
-    fields: Record<string, string>;
+    fields: Record<string, FieldValue>;
     collections: Record<string, CollectionItem[]>;
 }
 
 export interface CollectionItem {
-    [key: string]: string;
+    [key: string]: FieldValue;
+}
+
+/**
+ * Extract a link as a composite object
+ */
+function extractLinkValue($element: cheerio.Cheerio<any>): LinkFieldValue {
+    const href = $element.attr('href') || $element.attr('to') || '';
+    const text = $element.text().trim();
+    const target = $element.attr('target');
+    const newTab = target === '_blank';
+
+    return {
+        url: href,
+        text: text,
+        newTab: newTab || undefined,
+    };
 }
 
 /**
@@ -46,6 +68,14 @@ export function extractContentFromHTML(
                     // Extract image src
                     const src = element.attr('src') || element.find('img').attr('src') || '';
                     content.fields[fieldName] = src;
+                } else if (field.type === 'link') {
+                    // Extract link as composite object
+                    const linkElement = element.is('a') || element.is('NuxtLink') || element.is('nuxt-link')
+                        ? element
+                        : element.find('a, NuxtLink, nuxt-link').first();
+                    if (linkElement.length > 0) {
+                        content.fields[fieldName] = extractLinkValue(linkElement);
+                    }
                 } else {
                     // Extract text content
                     const text = element.text().trim();
@@ -66,17 +96,28 @@ export function extractContentFromHTML(
                 const $elem = $(elem);
 
                 // Extract each field within the collection item
-                for (const [fieldName, fieldSelector] of Object.entries(collection.fields)) {
+                for (const [fieldName, fieldConfig] of Object.entries(collection.fields)) {
+                    // Get selector from field config
+                    const fieldSelector = typeof fieldConfig === 'string'
+                        ? fieldConfig
+                        : (fieldConfig as any).selector || fieldConfig;
+                    const fieldType = typeof fieldConfig === 'object' ? (fieldConfig as any).type : undefined;
+
                     const fieldElement = $elem.find(fieldSelector as string).first();
 
                     if (fieldElement.length > 0) {
-                        // Check if it's an image field
-                        if (fieldName === 'image' || fieldName.includes('image')) {
+                        // Check field type or infer from name
+                        if (fieldType === 'image' || fieldName === 'image' || fieldName.includes('image')) {
                             const src = fieldElement.attr('src') || fieldElement.find('img').attr('src') || '';
                             item[fieldName] = src;
-                        } else if (fieldName === 'link' || fieldName === 'url') {
-                            const href = fieldElement.attr('href') || '';
-                            item[fieldName] = href;
+                        } else if (fieldType === 'link' || fieldName === 'link' || fieldName === 'url') {
+                            // Extract link as composite object
+                            const linkElement = fieldElement.is('a') || fieldElement.is('NuxtLink') || fieldElement.is('nuxt-link')
+                                ? fieldElement
+                                : fieldElement.find('a, NuxtLink, nuxt-link').first();
+                            if (linkElement.length > 0) {
+                                item[fieldName] = extractLinkValue(linkElement);
+                            }
                         } else {
                             // Extract text
                             const text = fieldElement.text().trim();
@@ -102,11 +143,12 @@ export function extractContentFromHTML(
 
 /**
  * Extract content from all pages based on manifest
+ * Stores the manifest alongside extracted content for use in formatForStrapi
  */
 export function extractAllContent(
     htmlFiles: Map<string, string>,
     manifest: CMSManifest
-): ExtractedContent {
+): ExtractedContent & { manifest: CMSManifest } {
     const extractedContent: ExtractedContent = {
         pages: {},
     };
@@ -120,7 +162,18 @@ export function extractAllContent(
         }
     }
 
-    return extractedContent;
+    if (manifest.global?.fields) {
+        const firstPage = Object.keys(manifest.pages)[0];
+        const firstHtml = firstPage ? htmlFiles.get(firstPage) : undefined;
+        if (firstHtml) {
+            extractedContent.global = extractContentFromHTML(firstHtml, "global", {
+                fields: manifest.global.fields,
+                collections: {}
+            });
+        }
+    }
+
+    return { ...extractedContent, manifest };
 }
 
 /**
@@ -128,20 +181,14 @@ export function extractAllContent(
  * Converts absolute/relative paths to public asset paths
  */
 export function normalizeImagePath(imageSrc: string): string {
-    if (!imageSrc) return '';
+    return normalizeImageSeedPath(imageSrc);
+}
 
-    // If it's already a relative path starting with /, keep it
-    if (imageSrc.startsWith('/')) return imageSrc;
-
-    // If it's in images folder, normalize to /images/filename
-    const filename = path.basename(imageSrc);
-
-    if (imageSrc.includes('images/')) {
-        return `/images/${filename}`;
-    }
-
-    // Default: assume it's in public root
-    return `/${filename}`;
+/**
+ * Check if a value is a link object
+ */
+function isLinkValue(value: FieldValue): value is LinkFieldValue {
+    return typeof value === 'object' && value !== null && 'url' in value && 'text' in value;
 }
 
 /**
@@ -156,8 +203,11 @@ export function formatForStrapi(extracted: ExtractedContent): Record<string, any
             const formattedFields: Record<string, any> = {};
 
             for (const [fieldName, value] of Object.entries(content.fields)) {
-                // Normalize image paths
-                if (fieldName.includes('image') || fieldName.includes('bg')) {
+                if (isLinkValue(value)) {
+                    // Keep link objects as-is for Strapi component
+                    formattedFields[fieldName] = value;
+                } else if (fieldName.includes('image') || fieldName.includes('img') || fieldName.includes('bg') || isLikelyImagePath(value)) {
+                    // Normalize image paths
                     formattedFields[fieldName] = normalizeImagePath(value);
                 } else {
                     formattedFields[fieldName] = value;
@@ -173,8 +223,11 @@ export function formatForStrapi(extracted: ExtractedContent): Record<string, any
                 const formattedItem: Record<string, any> = {};
 
                 for (const [fieldName, value] of Object.entries(item)) {
-                    // Normalize image paths
-                    if (fieldName === 'image' || fieldName.includes('image')) {
+                    if (isLinkValue(value)) {
+                        // Keep link objects as-is for Strapi component
+                        formattedItem[fieldName] = value;
+                    } else if (fieldName === 'image' || fieldName.includes('image') || fieldName.includes('img') || isLikelyImagePath(value)) {
+                        // Normalize image paths
                         formattedItem[fieldName] = normalizeImagePath(value);
                     } else {
                         formattedItem[fieldName] = value;
@@ -186,6 +239,20 @@ export function formatForStrapi(extracted: ExtractedContent): Record<string, any
 
             seedData[collectionName] = formattedItems;
         }
+    }
+
+    if (extracted.global && Object.keys(extracted.global.fields).length > 0) {
+        const formattedFields: Record<string, any> = {};
+        for (const [fieldName, value] of Object.entries(extracted.global.fields)) {
+            if (isLinkValue(value)) {
+                formattedFields[fieldName] = value;
+            } else if (fieldName.includes('image') || fieldName.includes('img') || fieldName.includes('bg') || isLikelyImagePath(value)) {
+                formattedFields[fieldName] = normalizeImagePath(value);
+            } else {
+                formattedFields[fieldName] = value;
+            }
+        }
+        seedData.global = formattedFields;
     }
 
     return seedData;

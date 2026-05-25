@@ -47,5 +47,8 @@ coverage/
 *.temp
 .cache/
 strapi-dev/
+pandar-strapi/
+pandar-nuxt/
 nuxt-dev/
 .claude/
+/rivy-nuxt

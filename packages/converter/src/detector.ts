@@ -1,11 +1,90 @@
 /**
  * Auto-detection of editable fields from Vue components
+ * Enhanced with universal detection, expanded collection keywords, and data-cms attributes
  */
 
 import * as cheerio from 'cheerio';
 import fs from 'fs-extra';
 import path from 'path';
-import type { FieldMapping, CollectionMapping } from '@see-ms/types';
+import { glob } from 'glob';
+import type { FieldMapping, CollectionMapping, DataCMSAttributes, FieldType } from '@see-ms/types';
+import { htmlPathToPageId } from './routes';
+
+/**
+ * Text element selectors for universal detection
+ * Note: div is handled separately with additional checks
+ */
+const TEXT_SELECTORS = [
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    'p', 'span', 'li', 'blockquote', 'figcaption',
+    'label', 'td', 'th', 'dt', 'dd', 'cite', 'q',
+    // div is NOT included here - handled separately to only detect text-only divs
+];
+
+/**
+ * Elements/classes to ignore during detection
+ */
+const IGNORE_PATTERNS = [
+    '.sr-only', '.visually-hidden', '[aria-hidden="true"]',
+    'script', 'style', 'noscript', 'template'
+];
+
+/**
+ * Class patterns that suggest decorative/non-editable content
+ */
+const DECORATIVE_CLASS_PATTERNS = [
+    'icon', 'arrow', 'pagination', 'breadcrumb',
+    'loader', 'spinner', 'skeleton', 'placeholder'
+];
+
+/**
+ * Detection options
+ */
+export interface DetectionOptions {
+    /** Custom collection classes to detect */
+    collectionClasses?: string[];
+    /** Minimum items for collection detection */
+    collectionMin?: number;
+    /** Enable universal detection (default: true) */
+    universalDetection?: boolean;
+    /** Selectors to ignore */
+    ignoreSelectors?: string[];
+    /** Classes to ignore */
+    ignoreClasses?: string[];
+}
+
+/**
+ * Parse data-cms attributes from an element
+ */
+export function parseDataCMSAttributes($el: cheerio.Cheerio<any>): DataCMSAttributes | null {
+    const name = $el.attr('data-cms');
+    const type = $el.attr('data-cms-type') as any;
+    const ignore = $el.attr('data-cms-ignore') !== undefined;
+    const group = $el.attr('data-cms-group');
+
+    if (!name && !type && !ignore && !group) return null;
+
+    return { name, type, ignore, group };
+}
+
+/**
+ * Check if class name matches user-provided collection classes
+ * No auto-detection - only matches exact classes from user input
+ */
+function isCollectionClass(className: string, customClasses?: string[]): boolean {
+    if (!customClasses || customClasses.length === 0) return false;
+
+    const normalizedName = className.toLowerCase().replace(/-/g, '_');
+
+    for (const customClass of customClasses) {
+        const normalizedCustom = customClass.toLowerCase().replace(/-/g, '_');
+        if (normalizedName === normalizedCustom || normalizedName.includes(normalizedCustom)) {
+            return true;
+        }
+    }
+
+    return false;
+}
 
 /**
  * Clean class name - remove utility prefixes and normalize
@@ -39,29 +118,6 @@ function getPrimaryClass(classAttr: string | undefined): { selector: string; fie
 }
 
 /**
- * Get context modifier from parent classes (cc-* prefixes)
- */
-function getContextModifier(_$: cheerio.CheerioAPI, $el: cheerio.Cheerio<any>): string | null {
-    // Look up the parent tree for cc-* modifiers
-    let $current = $el.parent();
-    let depth = 0;
-
-    while ($current.length > 0 && depth < 5) {
-        const classes = $current.attr('class');
-        if (classes) {
-            const ccClass = classes.split(' ').find(c => c.startsWith('cc-'));
-            if (ccClass) {
-                return ccClass.replace('cc-', '').replace(/-/g, '_');
-            }
-        }
-        $current = $current.parent();
-        depth++;
-    }
-
-    return null;
-}
-
-/**
  * Check if element is decorative (shouldn't be editable)
  */
 function isDecorativeImage(_$: cheerio.CheerioAPI, $img: cheerio.Cheerio<any>): boolean {
@@ -84,8 +140,242 @@ function isDecorativeImage(_$: cheerio.CheerioAPI, $img: cheerio.Cheerio<any>): 
  */
 function isInsideButton($: cheerio.CheerioAPI, el: any): boolean {
     const $el = $(el);
-    const $button = $el.closest('button, a, NuxtLink, .c_button, .c_icon_button');
+    const $button = $el.closest('button, a, NuxtLink, nuxt-link, .c_button, .c_icon_button');
     return $button.length > 0;
+}
+
+/**
+ * Check if element should be ignored based on patterns
+ */
+function shouldIgnoreElement(
+    _$: cheerio.CheerioAPI,
+    $el: cheerio.Cheerio<any>,
+    options: DetectionOptions = {}
+): boolean {
+    // Check data-cms-ignore attribute
+    if ($el.attr('data-cms-ignore') !== undefined) return true;
+
+    // Check if matches ignore patterns
+    for (const pattern of IGNORE_PATTERNS) {
+        if ($el.is(pattern)) return true;
+        if ($el.closest(pattern).length > 0) return true;
+    }
+
+    for (const selector of options.ignoreSelectors || []) {
+        if ($el.is(selector)) return true;
+        if ($el.closest(selector).length > 0) return true;
+    }
+
+    // Check for decorative class patterns
+    const className = $el.attr('class') || '';
+    for (const ignoredClass of options.ignoreClasses || []) {
+        if (className.split(/\s+/).includes(ignoredClass)) return true;
+    }
+    for (const pattern of DECORATIVE_CLASS_PATTERNS) {
+        if (className.toLowerCase().includes(pattern)) return true;
+    }
+
+    return false;
+}
+
+/**
+ * Check if an element is an editable "leaf" element
+ * A leaf element has:
+ * - ZERO child elements (no nested HTML tags)
+ * - ONE or more text nodes (actual content exists)
+ *
+ * Examples:
+ * - <div>Test</div> → true (no children, has text)
+ * - <div></div> → false (no children, no text)
+ * - <div><span>Test</span></div> → false (has child element)
+ * - <p>Hello <strong>world</strong></p> → false (has child element)
+ */
+function isEditableLeaf($el: cheerio.Cheerio<any>): boolean {
+    // Must have ZERO child ELEMENTS (no nested HTML tags)
+    if ($el.children().length > 0) {
+        return false;
+    }
+
+    // Must have actual text content (child TEXT NODE)
+    const text = $el.text().trim();
+    if (text.length === 0) {
+        return false; // Skip empty elements like <div></div>
+    }
+
+    return true;
+}
+
+// Global index counter for truly unique field names
+let globalFieldIndex = 0;
+
+/**
+ * Reset global field index (call at start of detection)
+ */
+function resetGlobalFieldIndex(): void {
+    globalFieldIndex = 0;
+}
+
+/**
+ * Generate a unique field name from element context
+ * Priority: data-cms > id > aria-label > class > parent context > content-based > global index
+ */
+function generateFieldName(
+    _$: cheerio.CheerioAPI,
+    $el: cheerio.Cheerio<any>,
+    elementType: string,
+    _index: number
+): string {
+    // 1. Check for data-cms attribute (highest priority)
+    const dataCms = $el.attr('data-cms');
+    if (dataCms) return dataCms.replace(/-/g, '_');
+
+    // 2. Check for id attribute
+    const id = $el.attr('id');
+    if (id) return id.replace(/-/g, '_');
+
+    // 3. Check for aria-label
+    const ariaLabel = $el.attr('aria-label');
+    if (ariaLabel) return ariaLabel.replace(/[^a-zA-Z0-9]+/g, '_').toLowerCase();
+
+    // 4. Check for semantic class (not utility classes)
+    const classInfo = getPrimaryClass($el.attr('class'));
+    if (classInfo && !classInfo.fieldName.startsWith('w_') && !classInfo.fieldName.startsWith('c_')) {
+        return classInfo.fieldName;
+    }
+
+    // 5. Use parent context + element type
+    const $parent = $el.parent();
+    const parentClassInfo = getPrimaryClass($parent.attr('class'));
+    if (parentClassInfo && !parentClassInfo.fieldName.startsWith('w_') && !parentClassInfo.fieldName.startsWith('c_')) {
+        return `${parentClassInfo.fieldName}_${elementType}`;
+    }
+
+    // 6. Look for section context
+    const $section = $el.closest('section, [class*="section"], [class*="hero"], [class*="cta"], [class*="about"]').first();
+    const sectionClassInfo = getPrimaryClass($section.attr('class'));
+    if (sectionClassInfo && $section.length > 0) {
+        return `${sectionClassInfo.fieldName}_${elementType}`;
+    }
+
+    // 7. Content-based naming (use first few words of text)
+    const text = $el.text().trim();
+    if (text.length > 0 && text.length < 50) {
+        // Use first 2-3 words as name
+        const words = text.split(/\s+/).slice(0, 3);
+        const contentName = words.join('_').toLowerCase().replace(/[^a-z0-9_]/g, '');
+        if (contentName.length > 2 && contentName.length < 30) {
+            return `${elementType}_${contentName}`;
+        }
+    }
+
+    // 8. Fallback with GLOBAL unique index (guaranteed unique)
+    return `${elementType}_${globalFieldIndex++}`;
+}
+
+/**
+ * Build a unique CSS selector for an element
+ * Tries multiple strategies and VALIDATES uniqueness for each
+ * Falls back to full path from root if nothing else works
+ */
+function buildUniqueSelector($: cheerio.CheerioAPI, $el: cheerio.Cheerio<any>): string {
+    const tag = ($el.prop('tagName') || 'div').toLowerCase();
+
+    // Strategy 1: ID is always unique
+    const id = $el.attr('id');
+    if (id) {
+        const selector = `#${id}`;
+        if ($(selector).length === 1) return selector;
+    }
+
+    // Strategy 2: data-cms attribute
+    const dataCms = $el.attr('data-cms');
+    if (dataCms) {
+        const selector = `[data-cms="${dataCms}"]`;
+        if ($(selector).length === 1) return selector;
+    }
+
+    // Strategy 3: Try class combinations until we find a unique one
+    const className = $el.attr('class');
+    if (className) {
+        const classes = className.split(' ').filter(c => c.length > 2 && !c.startsWith('w-'));
+
+        // Try single classes first
+        for (const cls of classes) {
+            const selector = `.${cls}`;
+            if ($(selector).length === 1) return selector;
+        }
+
+        // Try tag + class combinations
+        for (const cls of classes) {
+            const selector = `${tag}.${cls}`;
+            if ($(selector).length === 1) return selector;
+        }
+
+        // Try multiple class combinations
+        for (let i = 2; i <= Math.min(classes.length, 3); i++) {
+            const combo = classes.slice(0, i).map(c => `.${c}`).join('');
+            if ($(combo).length === 1) return combo;
+        }
+    }
+
+    // Strategy 4: Build path with nth-of-type (guaranteed unique)
+    return buildFullPath($, $el);
+}
+
+/**
+ * Build a full path selector from root to element
+ * This is GUARANTEED to be unique
+ */
+function buildFullPath(_$: cheerio.CheerioAPI, $el: cheerio.Cheerio<any>): string {
+    const parts: string[] = [];
+    let current = $el;
+
+    while (current.length && current.prop('tagName')) {
+        const tag = (current.prop('tagName') || '').toLowerCase();
+        if (!tag || tag === 'html' || tag === 'body') break;
+
+        const $parent = current.parent();
+        const $siblings = $parent.children(tag);
+
+        let part = tag;
+        if ($siblings.length > 1) {
+            const index = $siblings.index(current) + 1;
+            part = `${tag}:nth-of-type(${index})`;
+        }
+
+        parts.unshift(part);
+        current = $parent;
+
+        // Stop if we have enough specificity (3-4 levels is usually enough)
+        if (parts.length >= 4) break;
+    }
+
+    return parts.join(' > ');
+}
+
+/**
+ * Determine field type from element and content
+ */
+function determineFieldType($el: cheerio.Cheerio<any>, tagName: string): FieldType {
+    // Check data-cms-type attribute first
+    const dataCmsType = $el.attr('data-cms-type') as FieldType | undefined;
+    if (dataCmsType) return dataCmsType;
+
+    // Check for rich text indicators
+    const hasFormatting = $el.find('strong, em, b, i, br, a').length > 0;
+    const innerHTML = $el.html() || '';
+    const hasHtmlTags = /<[^>]+>/.test(innerHTML);
+
+    if (hasFormatting || hasHtmlTags) {
+        return 'rich';
+    }
+
+    // Links
+    if (tagName === 'a' || tagName === 'nuxt-link' || $el.is('NuxtLink')) {
+        return 'link';
+    }
+
+    return 'plain';
 }
 
 /**
@@ -101,47 +391,105 @@ export function extractTemplateFromVue(vueContent: string): string {
 
 /**
  * Detect editable fields from Vue template content
+ * Universal detection: finds ALL text, images, and links
  */
-export function detectEditableFields(templateHtml: string): {
+export function detectEditableFields(
+    templateHtml: string,
+    options: DetectionOptions = {}
+): {
     fields: Record<string, FieldMapping>;
     collections: Record<string, CollectionMapping>;
 } {
     const $ = cheerio.load(templateHtml);
     const detectedFields: Record<string, FieldMapping> = {};
     const detectedCollections: Record<string, CollectionMapping> = {};
+    const { collectionClasses, collectionMin = 2, universalDetection = true } = options;
 
-    // Track which elements are part of collections
+    // Reset global field index for this detection run
+    resetGlobalFieldIndex();
+
+    // Track which elements are part of collections or already processed
     const collectionElements = new Set<any>();
-    const processedCollectionClasses = new Set<string>();
+    const processedElements = new Set<any>();
+    const usedFieldNames = new Set<string>();
 
-    // 1. Detect collections FIRST
+    // Helper to get unique field name
+    const getUniqueFieldName = (baseName: string): string => {
+        let name = baseName;
+        let counter = 1;
+        while (usedFieldNames.has(name)) {
+            name = `${baseName}_${counter++}`;
+        }
+        usedFieldNames.add(name);
+        return name;
+    };
+
+    // ========================================
+    // PHASE 0: Process data-cms attributes first (highest priority)
+    // ========================================
+    $('[data-cms]').each((_, el) => {
+        const $el = $(el);
+        if (shouldIgnoreElement($, $el, options)) return;
+
+        const fieldName = $el.attr('data-cms')!.replace(/-/g, '_');
+        const tagName = ($el.prop('tagName') || 'div').toLowerCase();
+        const fieldType = determineFieldType($el, tagName);
+        const selector = buildUniqueSelector($, $el);
+
+        detectedFields[getUniqueFieldName(fieldName)] = {
+            selector,
+            type: fieldType,
+            editable: true,
+            source: 'attribute',
+        };
+
+        processedElements.add(el);
+    });
+
+    // ========================================
+    // PHASE 1: Detect collections
+    // Only from: data-cms-collection attribute OR user-provided collection classes
+    // ========================================
     const potentialCollections = new Map<string, any[]>();
 
-    $('[class]').each((_, el) => {
-        const primaryClass = getPrimaryClass($(el).attr('class'));
+    // Method 1: Detect by data-cms-collection attribute (highest priority)
+    $('[data-cms-collection]').each((_, el) => {
+        const $el = $(el);
+        const collectionName = $el.attr('data-cms-collection')!;
+        const normalizedName = collectionName.replace(/-/g, '_');
 
-        // Only detect top-level collection containers
-        if (primaryClass && (
-            primaryClass.fieldName.includes('card') ||
-            primaryClass.fieldName.includes('item') ||
-            primaryClass.fieldName.includes('post') ||
-            primaryClass.fieldName.includes('feature')
-        ) && !primaryClass.fieldName.includes('image') && !primaryClass.fieldName.includes('inner')) {
-            if (!potentialCollections.has(primaryClass.fieldName)) {
-                potentialCollections.set(primaryClass.fieldName, []);
-            }
-            potentialCollections.get(primaryClass.fieldName)?.push(el);
+        if (!potentialCollections.has(normalizedName)) {
+            potentialCollections.set(normalizedName, []);
         }
+        potentialCollections.get(normalizedName)?.push(el);
     });
+
+    // Method 2: Detect by user-provided collection classes (from CLI input)
+    if (collectionClasses && collectionClasses.length > 0) {
+        $('[class]').each((_, el) => {
+            const primaryClass = getPrimaryClass($(el).attr('class'));
+
+            // Skip elements that shouldn't be collections
+            if (!primaryClass) return;
+            if (primaryClass.fieldName.includes('image')) return;
+            if (primaryClass.fieldName.includes('inner')) return;
+            if (primaryClass.fieldName.includes('wrapper') && !primaryClass.fieldName.includes('card')) return;
+
+            // Check if this matches user-provided collection classes
+            if (isCollectionClass(primaryClass.fieldName, collectionClasses)) {
+                if (!potentialCollections.has(primaryClass.fieldName)) {
+                    potentialCollections.set(primaryClass.fieldName, []);
+                }
+                potentialCollections.get(primaryClass.fieldName)?.push(el);
+            }
+        });
+    }
 
     // Process collections
     potentialCollections.forEach((elements, className) => {
-        if (elements.length >= 2) {
+        if (elements.length >= collectionMin) {
             const $first = $(elements[0]);
             const collectionFields: Record<string, any> = {};
-
-            // Mark this collection as processed
-            processedCollectionClasses.add(className);
 
             // Mark all elements in this collection
             elements.forEach(el => {
@@ -155,58 +503,51 @@ export function detectEditableFields(templateHtml: string): {
             const collectionClassInfo = getPrimaryClass($(elements[0]).attr('class'));
             const collectionSelector = collectionClassInfo ? `.${collectionClassInfo.selector}` : `.${className}`;
 
-            // Detect fields within collection
-            // Images
-            // @ts-ignore
+            // Detect fields within collection - Images
             $first.find('img').each((_, img) => {
                 if (isInsideButton($, img)) return;
-
                 const $img = $(img);
                 const $parent = $img.parent();
                 const parentClassInfo = getPrimaryClass($parent.attr('class'));
 
                 if (parentClassInfo && parentClassInfo.fieldName.includes('image')) {
-                    collectionFields.image = `.${parentClassInfo.selector}`;
-                    return false; // Only first image
-                }
-            });
-
-            // Tags/categories
-            // @ts-ignore
-            $first.find('div').each((_, el) => {
-                const classInfo = getPrimaryClass($(el).attr('class'));
-                if (classInfo && classInfo.fieldName.includes('tag') && !classInfo.fieldName.includes('container')) {
-                    collectionFields.tag = `.${classInfo.selector}`;
+                    collectionFields.image = { selector: `.${parentClassInfo.selector}`, type: 'image', attribute: 'src' };
+                    return false;
+                } else {
+                    collectionFields.image = { selector: 'img', type: 'image', attribute: 'src' };
                     return false;
                 }
             });
 
-            // Headings
-            $first.find('h1, h2, h3, h4, h5, h6').first().each((_, el) => {
+            // Tags/categories
+            $first.find('[class*="tag"]').not('[class*="container"]').first().each((_, el) => {
                 const classInfo = getPrimaryClass($(el).attr('class'));
                 if (classInfo) {
-                    collectionFields.title = `.${classInfo.selector}`;
+                    collectionFields.tag = { selector: `.${classInfo.selector}`, type: 'plain' };
                 }
             });
 
-            // Descriptions
+            // Headings (title)
+            $first.find('h1, h2, h3, h4, h5, h6').first().each((_, el) => {
+                const classInfo = getPrimaryClass($(el).attr('class'));
+                const selector = classInfo ? `.${classInfo.selector}` : (el as any).tagName?.toLowerCase() || 'h2';
+                collectionFields.title = { selector, type: 'plain' };
+            });
+
+            // Descriptions (paragraphs)
             $first.find('p').first().each((_, el) => {
                 const classInfo = getPrimaryClass($(el).attr('class'));
-                if (classInfo) {
-                    collectionFields.description = `.${classInfo.selector}`;
-                }
+                const selector = classInfo ? `.${classInfo.selector}` : 'p';
+                collectionFields.description = { selector, type: 'plain' };
             });
 
             // Links
-            // @ts-ignore
-            $first.find('a, NuxtLink').not('.c_button, .c_icon_button').each((_, el) => {
+            $first.find('a, NuxtLink, nuxt-link').not('.c_button, .c_icon_button').first().each((_, el) => {
                 const $link = $(el);
                 const linkText = $link.text().trim();
-
                 if (linkText) {
                     const classInfo = getPrimaryClass($link.attr('class'));
-                    collectionFields.link = classInfo ? `.${classInfo.selector}` : 'a';
-                    return false; // Only first link
+                    collectionFields.link = { selector: classInfo ? `.${classInfo.selector}` : 'a', type: 'link', attribute: 'href' };
                 }
             });
 
@@ -224,117 +565,137 @@ export function detectEditableFields(templateHtml: string): {
         }
     });
 
-    // 2. Detect individual fields
-    const $body = $('body');
+    // ========================================
+    // PHASE 2: Universal field detection (all remaining elements)
+    // ========================================
+    if (universalDetection) {
+        const $body = $('body');
+        let textIndex = 0;
+        let imageIndex = 0;
+        let linkIndex = 0;
 
-    // Headings
-    $body.find('h1, h2, h3, h4, h5, h6').each((index, el) => {
-        if (collectionElements.has(el)) return;
+        // 2a. Detect ALL text elements (h1-h6, p, span, etc. AND divs)
+        // CRITICAL: Only detect LEAF elements (no child elements, has text content)
+        const allTextSelectors = [...TEXT_SELECTORS, 'div'].join(', ');
+        $body.find(allTextSelectors).each((_, el) => {
+            if (collectionElements.has(el)) return;
+            if (processedElements.has(el)) return;
 
-        const $el = $(el);
-        const text = $el.text().trim();
-        const classInfo = getPrimaryClass($el.attr('class'));
+            const $el = $(el);
 
-        if (text) {
-            let fieldName: string;
-            let selector: string;
+            // Skip ignored elements
+            if (shouldIgnoreElement($, $el, options)) return;
 
-            if (classInfo && !classInfo.fieldName.startsWith('heading_')) {
-                // Has semantic class
-                fieldName = classInfo.fieldName;
-                selector = `.${classInfo.selector}`;
-            } else {
-                // Generic heading - use parent context
-                const $parent = $el.closest('[class*="header"], [class*="hero"], [class*="cta"]').first();
-                const parentClassInfo = getPrimaryClass($parent.attr('class'));
-                const modifier = getContextModifier($, $el);
+            // Skip anchors - they're handled by link detection
+            const tagName = ($el.prop('tagName') || 'div').toLowerCase();
+            if (tagName === 'a' || tagName === 'nuxt-link' || $el.is('NuxtLink')) return;
 
-                if (parentClassInfo) {
-                    fieldName = modifier ? `${modifier}_${parentClassInfo.fieldName}` : parentClassInfo.fieldName;
-                    selector = classInfo ? `.${classInfo.selector}` : `.${parentClassInfo.selector}`;
-                } else if (modifier) {
-                    fieldName = `${modifier}_heading`;
-                    selector = classInfo ? `.${classInfo.selector}` : el.tagName.toLowerCase();
-                } else {
-                    fieldName = `heading_${index}`;
-                    selector = classInfo ? `.${classInfo.selector}` : el.tagName.toLowerCase();
-                }
-            }
+            // Skip elements inside links/buttons (will be handled with link detection)
+            if (isInsideButton($, el)) return;
 
-            detectedFields[fieldName] = {
-                selector: selector,
-                type: 'plain',
+            // CRITICAL: Only detect LEAF elements
+            // Must have ZERO child elements and actual text content
+            if (!isEditableLeaf($el)) return;
+
+            const fieldName = generateFieldName($, $el, tagName, textIndex++);
+            const fieldType = determineFieldType($el, tagName);
+            const selector = buildUniqueSelector($, $el);
+
+            detectedFields[getUniqueFieldName(fieldName)] = {
+                selector,
+                type: fieldType,
                 editable: true,
+                source: 'auto',
             };
-        }
-    });
 
-    // Paragraphs
-    $body.find('p').each((_index, el) => {
-        if (collectionElements.has(el)) return;
+            processedElements.add(el);
+        });
 
-        const $el = $(el);
-        const text = $el.text().trim();
-        const classInfo = getPrimaryClass($el.attr('class'));
+        // 2b. Detect ALL images
+        $body.find('img').each((_, el) => {
+            if (collectionElements.has(el)) return;
+            if (processedElements.has(el)) return;
 
-        if (text && text.length > 20 && classInfo) {
-            const hasFormatting = $el.find('strong, em, b, i, a, NuxtLink').length > 0;
+            const $el = $(el);
 
-            detectedFields[classInfo.fieldName] = {
-                selector: `.${classInfo.selector}`,
-                type: hasFormatting ? 'rich' : 'plain',
-                editable: true,
-            };
-        }
-    });
+            // Skip ignored elements
+            if (shouldIgnoreElement($, $el, options)) return;
 
-    // Content images only (skip decorative)
-    $body.find('img').each((_index, el) => {
-        if (collectionElements.has(el)) return;
-        if (isInsideButton($, el)) return;
+            // Skip decorative images (icons, arrows, etc.)
+            if (isDecorativeImage($, $el)) return;
 
-        const $el = $(el);
+            const fieldName = generateFieldName($, $el, 'image', imageIndex++);
+            const selector = buildUniqueSelector($, $el);
 
-        // Skip decorative images
-        if (isDecorativeImage($, $el)) return;
-
-        const $parent = $el.parent();
-        const parentClassInfo = getPrimaryClass($parent.attr('class'));
-
-        if (parentClassInfo) {
-            const fieldName = parentClassInfo.fieldName.includes('image')
-                ? parentClassInfo.fieldName
-                : `${parentClassInfo.fieldName}_image`;
-
-            detectedFields[fieldName] = {
-                selector: `.${parentClassInfo.selector}`,
+            detectedFields[getUniqueFieldName(fieldName)] = {
+                selector,
                 type: 'image',
                 editable: true,
+                source: 'auto',
+                attribute: 'src',
             };
-        }
-    });
 
-    // Button text
-    $body.find('NuxtLink.c_button, a.c_button, .c_button').each((_index, el) => {
-        if (collectionElements.has(el)) return;
+            processedElements.add(el);
+        });
 
-        const $el = $(el);
-        const text = $el.contents().filter(function() {
-            return this.type === 'text' || (this.type === 'tag' && this.name === 'div');
-        }).first().text().trim();
+        // 2c. Detect ALL links (as composite fields with URL + text, or href-only for image links)
+        $body.find('a, NuxtLink, nuxt-link').each((_, el) => {
+            if (collectionElements.has(el)) return;
+            if (processedElements.has(el)) return;
 
-        if (text && text.length > 2) {
-            const $parent = $el.closest('[class*="cta"]').first();
-            const parentClassInfo = getPrimaryClass($parent.attr('class'));
-            const fieldName = parentClassInfo ? `${parentClassInfo.fieldName}_button_text` : 'button_text';
+            const $el = $(el);
 
-            detectedFields[fieldName] = {
-                selector: `.c_button`,
+            // Skip ignored elements
+            if (shouldIgnoreElement($, $el, options)) return;
+
+            // Check if this is a link wrapping only an image
+            const hasOnlyImage = $el.children().length === 1 && $el.find('img').length === 1;
+            const linkText = $el.text().trim();
+
+            // Skip completely empty links with no image (icon-only, no content)
+            if (!hasOnlyImage && (!linkText || linkText.length < 2)) return;
+
+            const fieldName = generateFieldName($, $el, 'link', linkIndex++);
+            const selector = buildUniqueSelector($, $el);
+
+            detectedFields[getUniqueFieldName(fieldName)] = {
+                selector,
+                type: 'link',
+                editable: true,
+                source: 'auto',
+                attribute: 'href',
+            };
+
+            processedElements.add(el);
+        });
+
+        // 2d. Detect button text
+        $body.find('button, .c_button, [class*="button"]').each((_, el) => {
+            if (collectionElements.has(el)) return;
+            if (processedElements.has(el)) return;
+
+            const $el = $(el);
+
+            // Skip ignored elements
+            if (shouldIgnoreElement($, $el, options)) return;
+
+            // Get direct text content
+            const text = $el.clone().children().remove().end().text().trim();
+            if (!text || text.length < 2) return;
+
+            const fieldName = generateFieldName($, $el, 'button', textIndex++);
+            const selector = buildUniqueSelector($, $el);
+
+            detectedFields[getUniqueFieldName(fieldName)] = {
+                selector,
                 type: 'plain',
                 editable: true,
+                source: 'auto',
             };
-        }
-    });
+
+            processedElements.add(el);
+        });
+    }
 
     return {
         fields: detectedFields,
@@ -345,13 +706,16 @@ export function detectEditableFields(templateHtml: string): {
 /**
  * Analyze all Vue pages in a directory
  */
-export async function analyzeVuePages(pagesDir: string): Promise<Record<string, {
+export async function analyzeVuePages(
+    pagesDir: string,
+    options: DetectionOptions = {}
+): Promise<Record<string, {
     fields: Record<string, FieldMapping>;
     collections: Record<string, CollectionMapping>;
 }>> {
     const results: Record<string, any> = {};
 
-    const vueFiles = await fs.readdir(pagesDir);
+    const vueFiles = await glob('**/*.vue', { cwd: pagesDir, nodir: true });
 
     for (const file of vueFiles) {
         if (file.endsWith('.vue')) {
@@ -360,8 +724,8 @@ export async function analyzeVuePages(pagesDir: string): Promise<Record<string, 
             const template = extractTemplateFromVue(content);
 
             if (template) {
-                const pageName = file.replace('.vue', '');
-                results[pageName] = detectEditableFields(template);
+                const pageName = htmlPathToPageId(file.replace(/\.vue$/i, '.html'));
+                results[pageName] = detectEditableFields(template, options);
             }
         }
     }

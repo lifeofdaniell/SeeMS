@@ -61,30 +61,93 @@ async function copyFromLocal(sourcePath: string, outputDir: string): Promise<voi
 /**
  * Setup boilerplate in output directory
  */
+export type ProjectTarget = 'nuxt' | 'astro-vue';
+
 export async function setupBoilerplate(
   boilerplateSource: string | undefined,
-  outputDir: string
+  outputDir: string,
+  target: ProjectTarget = 'nuxt'
 ): Promise<void> {
   if (!boilerplateSource) {
     // No boilerplate specified - create minimal structure
-    console.log(pc.blue('\n📦 Creating minimal Nuxt structure...'));
+    console.log(pc.blue(`\n📦 Creating minimal ${target === 'astro-vue' ? 'Astro + Vue' : 'Nuxt'} structure...`));
     await fs.ensureDir(outputDir);
-    await fs.ensureDir(path.join(outputDir, 'pages'));
+    await fs.ensureDir(target === 'astro-vue' ? path.join(outputDir, 'src', 'pages') : path.join(outputDir, 'pages'));
     await fs.ensureDir(path.join(outputDir, 'assets'));
     await fs.ensureDir(path.join(outputDir, 'public'));
     await fs.ensureDir(path.join(outputDir, 'utils'));
-    
-    // Create a basic nuxt.config.ts if it doesn't exist
-    const configPath = path.join(outputDir, 'nuxt.config.ts');
+
+    const configPath = path.join(outputDir, target === 'astro-vue' ? 'astro.config.mjs' : 'nuxt.config.ts');
     const configExists = await fs.pathExists(configPath);
     
     if (!configExists) {
-      const basicConfig = `export default defineNuxtConfig({
+      const basicConfig = target === 'astro-vue'
+        ? `import { defineConfig } from 'astro/config';
+import vue from '@astrojs/vue';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+export default defineConfig({
+  integrations: [vue()],
+  vite: {
+    resolve: {
+      alias: {
+        '~': path.dirname(fileURLToPath(import.meta.url)),
+      },
+    },
+  },
+});
+`
+        : `export default defineNuxtConfig({
   devtools: { enabled: true },
   css: [],
 })
 `;
       await fs.writeFile(configPath, basicConfig, 'utf-8');
+    }
+
+    const packageJsonPath = path.join(outputDir, 'package.json');
+    const packageJsonExists = await fs.pathExists(packageJsonPath);
+
+    if (!packageJsonExists) {
+      const packageName = path.basename(outputDir) || (target === 'astro-vue' ? 'see-ms-astro-site' : 'see-ms-nuxt-site');
+      await fs.writeJson(packageJsonPath, target === 'astro-vue' ? {
+        name: packageName,
+        private: true,
+        type: 'module',
+        scripts: {
+          dev: 'astro dev',
+          build: 'astro build',
+          preview: 'astro preview'
+        },
+        dependencies: {
+          '@astrojs/vue': '^5.0.0',
+          astro: '^5.0.0',
+          vue: '^3.5.14'
+        },
+        devDependencies: {
+          typescript: '^5.8.3'
+        }
+      } : {
+        name: packageName,
+        private: true,
+        type: 'module',
+        scripts: {
+          dev: 'nuxt dev',
+          build: 'nuxt build',
+          generate: 'nuxt generate',
+          preview: 'nuxt preview',
+          postinstall: 'nuxt prepare'
+        },
+        dependencies: {
+          nuxt: '^3.17.4',
+          vue: '^3.5.14',
+          'vue-router': '^4.5.1'
+        },
+        devDependencies: {
+          typescript: '^5.8.3'
+        }
+      }, { spaces: 2 });
     }
     
     console.log(pc.green('  ✓ Structure created'));

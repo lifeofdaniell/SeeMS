@@ -2,7 +2,7 @@
  * Core editor logic
  */
 
-import type { EditorConfig, EditorInstance, EditableElement } from "./types";
+import type { EditorConfig, EditorInstance, EditableElement, LinkFieldValue } from "./types";
 import { Highlighter } from "./highlighter";
 import type { ManifestLoader } from "./manifest-loader";
 import type { DraftStorageManager } from "./draft-storage";
@@ -32,32 +32,62 @@ export function initEditor(config: EnhancedEditorConfig): EditorInstance {
       const fields = config.manifestLoader.getEditableFields(currentPage);
 
       Object.entries(fields).forEach(([fieldName, field]) => {
-        const elements = document.querySelectorAll(field.selector);
+        let elements: NodeListOf<Element>;
+        try {
+          elements = document.querySelectorAll(field.selector);
+        } catch (error) {
+          console.warn(`[CMS Editor] Invalid selector for field "${fieldName}": ${field.selector}`, error);
+          return;
+        }
 
         elements.forEach(el => {
           const element = el as HTMLElement;
 
-          // Skip elements inside buttons or nav
-          if (element.closest("button, nav, footer")) return;
+          // Skip button chrome unless it is explicitly mapped as editable.
+          if (field.type !== 'link' && element.closest("button") && !element.hasAttribute("data-cms-editable")) return;
 
-          const fieldType = element.tagName === "IMG" ? "image" :
-            field.type === "rich" ? "rich" : "plain";
+          // Determine field type
+          let fieldType: string;
+          if (element.tagName === "IMG" || field.type === "icon") {
+            fieldType = "image";
+          } else if (field.type === "link" || element.tagName === "A") {
+            fieldType = "link";
+          } else if (field.type === "rich") {
+            fieldType = "rich";
+          } else {
+            fieldType = "plain";
+          }
 
           // Mark element as editable for navigation guard
           element.setAttribute('data-cms-editable', 'true');
           element.setAttribute('data-cms-field', fieldName);
+
+          // Get value based on field type
+          let originalValue: string | LinkFieldValue;
+          if (fieldType === "image") {
+            originalValue = (element as HTMLImageElement).src;
+          } else if (fieldType === "link") {
+            const linkEl = element.tagName === "A" || element.tagName.toLowerCase() === "nuxt-link"
+              ? element as HTMLAnchorElement
+              : element.querySelector("a, nuxt-link");
+            originalValue = {
+              url: linkEl?.getAttribute("href") || linkEl?.getAttribute("to") || "",
+              text: linkEl?.textContent?.trim() || "",
+              newTab: linkEl?.getAttribute("target") === "_blank"
+            };
+          } else {
+            originalValue = element.textContent || "";
+          }
 
           editableElements.set(element, {
             element,
             selector: field.selector,
             fieldName,
             fieldType,
-            originalValue: fieldType === "image"
-              ? (element as HTMLImageElement).src
-              : element.textContent || "",
-            currentValue: fieldType === "image"
-              ? (element as HTMLImageElement).src
-              : element.textContent || "",
+            originalValue,
+            currentValue: fieldType === "link"
+              ? { ...(originalValue as LinkFieldValue) }
+              : originalValue as string,
             isDirty: false
           });
         });
@@ -135,6 +165,8 @@ export function initEditor(config: EnhancedEditorConfig): EditorInstance {
 
     if (elementData.fieldType === "image") {
       startImageEdit(element, elementData);
+    } else if (elementData.fieldType === "link") {
+      startLinkEdit(element, elementData);
     } else {
       // Handle text, plain, and rich field types
       startTextEdit(element, elementData);
@@ -147,6 +179,11 @@ export function initEditor(config: EnhancedEditorConfig): EditorInstance {
   function startTextEdit(element: HTMLElement, data: EditableElement): void {
     activeEditor = element;
     element.contentEditable = "true";
+    element.style.outline = "2px solid #3b82f6";
+    element.style.outlineOffset = "2px";
+    if (data.fieldType === "rich") {
+      showRichTextMiniToolbar(element);
+    }
     element.focus();
 
     // Select all text
@@ -159,7 +196,9 @@ export function initEditor(config: EnhancedEditorConfig): EditorInstance {
     // Handle blur (save)
     const handleBlur = () => {
       element.contentEditable = "false";
-      data.currentValue = element.textContent || "";
+      element.style.outline = "";
+      element.style.outlineOffset = "";
+      data.currentValue = data.fieldType === "rich" ? element.innerHTML : element.textContent || "";
       data.isDirty = data.currentValue !== data.originalValue;
       activeEditor = null;
       element.removeEventListener("blur", handleBlur);
@@ -171,6 +210,190 @@ export function initEditor(config: EnhancedEditorConfig): EditorInstance {
     };
 
     element.addEventListener("blur", handleBlur);
+  }
+
+  /**
+   * Start editing link (shows modal)
+   */
+  function startLinkEdit(element: HTMLElement, data: EditableElement): void {
+    const currentValue = data.currentValue as LinkFieldValue;
+
+    // Create modal overlay
+    const overlay = document.createElement("div");
+    overlay.style.cssText = `
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.5);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 100001;
+    `;
+
+    // Create modal
+    const modal = document.createElement("div");
+    modal.style.cssText = `
+      background: white;
+      border-radius: 8px;
+      padding: 24px;
+      width: 400px;
+      max-width: 90vw;
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
+      font-family: system-ui, -apple-system, sans-serif;
+      color: #1f2937;
+    `;
+
+    modal.innerHTML = `
+      <h3 style="margin: 0 0 16px; font-size: 18px; font-weight: 600; color: #1f2937;">Edit Link</h3>
+      <div style="margin-bottom: 16px;">
+        <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500; color: #374151;">Link Text</label>
+        <input type="text" id="cms-link-text" value="${escapeHtml(currentValue.text)}" style="
+          width: 100%;
+          padding: 8px 12px;
+          border: 1px solid #d1d5db;
+          border-radius: 6px;
+          font-size: 14px;
+          box-sizing: border-box;
+          color: #1f2937;
+        " />
+      </div>
+      <div style="margin-bottom: 16px;">
+        <label style="display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500; color: #374151;">URL</label>
+        <input type="text" id="cms-link-url" value="${escapeHtml(currentValue.url)}" style="
+          width: 100%;
+          padding: 8px 12px;
+          border: 1px solid #d1d5db;
+          border-radius: 6px;
+          font-size: 14px;
+          box-sizing: border-box;
+          color: #1f2937;
+        " />
+      </div>
+      <div style="margin-bottom: 20px;">
+        <label style="display: flex; align-items: center; gap: 8px; font-size: 14px; color: #374151;">
+          <input type="checkbox" id="cms-link-newtab" ${currentValue.newTab ? 'checked' : ''} style="
+            width: 16px;
+            height: 16px;
+            accent-color: #3b82f6;
+          " />
+          Open in new tab
+        </label>
+      </div>
+      <div style="display: flex; gap: 8px; justify-content: flex-end;">
+        <button id="cms-link-cancel" style="
+          padding: 8px 16px;
+          border: 1px solid #d1d5db;
+          border-radius: 6px;
+          background: white;
+          cursor: pointer;
+          font-size: 14px;
+          color: #374151;
+        ">Cancel</button>
+        <button id="cms-link-save" style="
+          padding: 8px 16px;
+          border: none;
+          border-radius: 6px;
+          background: #3b82f6;
+          color: white;
+          cursor: pointer;
+          font-size: 14px;
+        ">Save</button>
+      </div>
+    `;
+
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+
+    // Get form elements
+    const textInput = modal.querySelector("#cms-link-text") as HTMLInputElement;
+    const urlInput = modal.querySelector("#cms-link-url") as HTMLInputElement;
+    const newTabCheckbox = modal.querySelector("#cms-link-newtab") as HTMLInputElement;
+    const cancelBtn = modal.querySelector("#cms-link-cancel") as HTMLButtonElement;
+    const saveBtn = modal.querySelector("#cms-link-save") as HTMLButtonElement;
+
+    // Focus text input
+    textInput.focus();
+    textInput.select();
+
+    // Handle cancel
+    const handleCancel = () => {
+      document.body.removeChild(overlay);
+    };
+
+    // Handle save
+    const handleSave = () => {
+      const newValue: LinkFieldValue = {
+        url: urlInput.value,
+        text: textInput.value,
+        newTab: newTabCheckbox.checked || undefined
+      };
+
+      // Update element
+      const linkEl = element.tagName === "A" || element.tagName.toLowerCase() === "nuxt-link"
+        ? element as HTMLAnchorElement
+        : element.querySelector("a, nuxt-link");
+
+      if (linkEl) {
+        if (linkEl.tagName.toLowerCase() === "nuxt-link") {
+          linkEl.setAttribute("to", newValue.url);
+        } else {
+          (linkEl as HTMLAnchorElement).href = newValue.url;
+        }
+        linkEl.textContent = newValue.text;
+        if (newValue.newTab) {
+          (linkEl as HTMLElement).setAttribute("target", "_blank");
+        } else {
+          linkEl.removeAttribute("target");
+        }
+      }
+
+      // Update data
+      data.currentValue = newValue;
+      data.isDirty = JSON.stringify(newValue) !== JSON.stringify(data.originalValue);
+
+      // Save to draft
+      if (config.draftStorage && currentPage && data.isDirty) {
+        saveToDraft(data.fieldName, newValue);
+      }
+
+      document.body.removeChild(overlay);
+    };
+
+    // Handle escape key
+    const handleKeydown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        handleCancel();
+      } else if (e.key === "Enter" && !e.shiftKey) {
+        handleSave();
+      }
+    };
+
+    cancelBtn.addEventListener("click", handleCancel);
+    saveBtn.addEventListener("click", handleSave);
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) handleCancel();
+    });
+    document.addEventListener("keydown", handleKeydown);
+
+    // Cleanup on close
+    const cleanup = () => {
+      document.removeEventListener("keydown", handleKeydown);
+    };
+
+    cancelBtn.addEventListener("click", cleanup);
+    saveBtn.addEventListener("click", cleanup);
+  }
+
+  /**
+   * Escape HTML special characters
+   */
+  function escapeHtml(text: string): string {
+    const div = document.createElement("div");
+    div.textContent = text;
+    return div.innerHTML;
   }
 
   /**
@@ -221,35 +444,79 @@ export function initEditor(config: EnhancedEditorConfig): EditorInstance {
    * Start editing image
    */
   function startImageEdit(element: HTMLElement, data: EditableElement): void {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "image/*";
+    const currentValue = data.currentValue as string;
+    const newSrc = window.prompt("Image or icon URL/path", currentValue);
+    if (!newSrc || newSrc === currentValue) return;
 
-    input.onchange = async (e) => {
-      const file = (e.target as HTMLInputElement).files?.[0];
-      if (!file) return;
+    const img = element.tagName === "IMG"
+      ? element as HTMLImageElement
+      : element.querySelector("img") as HTMLImageElement | null;
 
-      // Create preview
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const img = element as HTMLImageElement;
-        const newSrc = event.target?.result as string;
-        img.src = newSrc;
-        data.currentValue = newSrc;
-        data.isDirty = true;
+    if (img) {
+      img.src = newSrc;
+    }
 
-        // Update reactive state immediately
-        updateReactiveState(data.fieldName, newSrc);
+    data.currentValue = newSrc;
+    data.isDirty = true;
+    updateReactiveState(data.fieldName, newSrc);
 
-        // Save to draft
-        if (config.draftStorage && currentPage) {
-          saveToDraft(data.fieldName, newSrc);
-        }
-      };
-      reader.readAsDataURL(file);
-    };
+    if (config.draftStorage && currentPage) {
+      saveToDraft(data.fieldName, newSrc);
+    }
+  }
 
-    input.click();
+  function showRichTextMiniToolbar(element: HTMLElement): void {
+    const existing = document.getElementById("cms-richtext-toolbar");
+    existing?.remove();
+
+    const toolbar = document.createElement("div");
+    toolbar.id = "cms-richtext-toolbar";
+    toolbar.style.cssText = `
+      position: fixed;
+      top: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 100002;
+      display: flex;
+      gap: 6px;
+      padding: 8px;
+      border-radius: 8px;
+      background: #111827;
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.22);
+      font-family: system-ui, -apple-system, sans-serif;
+    `;
+
+    const commands = [
+      { label: "B", command: "bold" },
+      { label: "I", command: "italic" },
+      { label: "UL", command: "insertUnorderedList" },
+      { label: "OL", command: "insertOrderedList" }
+    ];
+
+    commands.forEach(({ label, command }) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = label;
+      button.style.cssText = `
+        min-width: 32px;
+        height: 30px;
+        border: 0;
+        border-radius: 6px;
+        background: #f9fafb;
+        color: #111827;
+        font-weight: 700;
+        cursor: pointer;
+      `;
+      button.addEventListener("mousedown", (event) => {
+        event.preventDefault();
+        document.execCommand(command);
+        element.focus();
+      });
+      toolbar.appendChild(button);
+    });
+
+    document.body.appendChild(toolbar);
+    element.addEventListener("blur", () => toolbar.remove(), { once: true });
   }
 
   /**
@@ -380,11 +647,31 @@ export function initEditor(config: EnhancedEditorConfig): EditorInstance {
     editableElements.forEach((data) => {
       if (data.isDirty) {
         if (data.fieldType === "image") {
-          (data.element as HTMLImageElement).src = data.originalValue;
+          (data.element as HTMLImageElement).src = data.originalValue as string;
+        } else if (data.fieldType === "link") {
+          const originalLink = data.originalValue as LinkFieldValue;
+          const linkEl = data.element.tagName === "A" || data.element.tagName.toLowerCase() === "nuxt-link"
+            ? data.element as HTMLAnchorElement
+            : data.element.querySelector("a, nuxt-link");
+          if (linkEl) {
+            if (linkEl.tagName.toLowerCase() === "nuxt-link") {
+              linkEl.setAttribute("to", originalLink.url);
+            } else {
+              (linkEl as HTMLAnchorElement).href = originalLink.url;
+            }
+            linkEl.textContent = originalLink.text;
+            if (originalLink.newTab) {
+              (linkEl as HTMLElement).setAttribute("target", "_blank");
+            } else {
+              linkEl.removeAttribute("target");
+            }
+          }
         } else {
-          data.element.textContent = data.originalValue;
+          data.element.textContent = data.originalValue as string;
         }
-        data.currentValue = data.originalValue;
+        data.currentValue = data.fieldType === "link"
+          ? { ...(data.originalValue as LinkFieldValue) }
+          : data.originalValue;
         data.isDirty = false;
       }
     });
@@ -394,8 +681,9 @@ export function initEditor(config: EnhancedEditorConfig): EditorInstance {
    * Switch to a different page
    */
   async function setPage(pageName: string): Promise<void> {
+    const wasEnabled = isEnabled;
     // Disable current page
-    if (isEnabled) {
+    if (wasEnabled) {
       disable();
     }
 
@@ -403,7 +691,7 @@ export function initEditor(config: EnhancedEditorConfig): EditorInstance {
     currentPage = pageName;
 
     // Re-enable with new page
-    if (isEnabled) {
+    if (wasEnabled) {
       await enable();
     }
   }

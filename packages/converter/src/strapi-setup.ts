@@ -7,6 +7,8 @@ import fs from "fs-extra";
 import path from "path";
 import { glob } from "glob";
 import * as readline from "readline";
+import { spawn } from "child_process";
+import { isLikelyImagePath, mediaLookupKeys } from "./assets";
 
 // @ts-ignore
 interface SchemaFile {
@@ -21,6 +23,17 @@ interface SetupOptions {
   strapiUrl?: string;
   apiToken?: string;
   ignoreSavedToken?: boolean;
+  scaffold?: boolean;
+  scaffoldOptions?: StrapiScaffoldOptions;
+}
+
+export interface StrapiScaffoldOptions {
+  strapiDir: string;
+  packageManager?: "npm" | "pnpm" | "yarn";
+  install?: boolean;
+  run?: boolean;
+  gitInit?: boolean;
+  typescript?: boolean;
 }
 
 const ENV_FILE = ".env";
@@ -97,6 +110,17 @@ async function saveConfig(projectDir: string, config: { apiToken?: string; strap
 export async function completeSetup(options: SetupOptions): Promise<void> {
   const { projectDir, strapiDir, strapiUrl: optionUrl, apiToken: optionToken, ignoreSavedToken } = options;
 
+  if (!(await fs.pathExists(strapiDir))) {
+    if (!options.scaffold) {
+      throw new Error(`Strapi directory not found: ${strapiDir}`);
+    }
+
+    await scaffoldStrapiProject({
+      strapiDir,
+      ...options.scaffoldOptions
+    });
+  }
+
   // Load saved config
   const savedConfig = await loadConfig(projectDir);
   const strapiUrl = optionUrl || savedConfig.strapiUrl || "http://localhost:1337";
@@ -154,7 +178,7 @@ export async function completeSetup(options: SetupOptions): Promise<void> {
   // Step 5: Upload images
   console.log("📸 Step 5: Uploading images...");
   const mediaMap = await uploadAllImages(projectDir, strapiUrl, token);
-  console.log(`✓ Uploaded ${Object.keys(mediaMap).length} images\n`);
+  console.log(`✓ Mapped ${mediaMap.size} media lookup keys\n`);
 
   // Step 6: Seed content
   console.log("📝 Step 6: Seeding content...");
@@ -166,6 +190,73 @@ export async function completeSetup(options: SetupOptions): Promise<void> {
   console.log("   1. Open Strapi admin: http://localhost:1337/admin");
   console.log("   2. Check Content Manager - your content should be there!");
   console.log("   3. Connect your Nuxt app to Strapi API");
+}
+
+/**
+ * Scaffold a new Strapi project using the official Strapi create CLI.
+ */
+export async function scaffoldStrapiProject(options: StrapiScaffoldOptions): Promise<void> {
+  const {
+    strapiDir,
+    packageManager = "npm",
+    install = true,
+    run = false,
+    gitInit = false,
+    typescript = true
+  } = options;
+
+  const resolvedDir = path.resolve(strapiDir);
+  if (await fs.pathExists(resolvedDir)) {
+    const entries = await fs.readdir(resolvedDir);
+    if (entries.length > 0) {
+      throw new Error(`Cannot scaffold Strapi into a non-empty directory: ${resolvedDir}`);
+    }
+  }
+
+  await fs.ensureDir(path.dirname(resolvedDir));
+
+  const args = [
+    "create-strapi@latest",
+    resolvedDir,
+    typescript ? "--typescript" : "--javascript",
+    "--skip-cloud",
+    "--skip-db",
+    "--no-example",
+    install ? "--install" : "--no-install",
+    gitInit ? "--git-init" : "--no-git-init",
+    `--use-${packageManager}`
+  ];
+  if (!run) {
+    args.push("--no-run");
+  }
+
+  console.log("🏗️  Scaffolding Strapi project...");
+  console.log(`   npx ${args.join(" ")}`);
+
+  await runCommand("npx", args, process.cwd());
+  if (!(await fs.pathExists(path.join(resolvedDir, "package.json")))) {
+    throw new Error(`Strapi scaffold did not create a project at ${resolvedDir}`);
+  }
+  console.log(`✓ Strapi project scaffolded at ${resolvedDir}`);
+}
+
+function runCommand(command: string, args: string[], cwd: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd,
+      stdio: "inherit",
+      shell: process.platform === "win32"
+    });
+
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`${command} ${args.join(" ")} exited with code ${code}`));
+      }
+    });
+  });
 }
 
 /**
@@ -191,6 +282,27 @@ async function installSchemas(
   }
 
   const schemaDir = path.join(projectDir, "cms-schemas");
+
+  // Install components first (e.g., shared.link)
+  const componentsDir = path.join(schemaDir, "components");
+  if (await fs.pathExists(componentsDir)) {
+    const componentFiles = await glob("**/*.json", {
+      cwd: componentsDir,
+      absolute: false
+    });
+
+    if (componentFiles.length > 0) {
+      console.log(`   Found ${componentFiles.length} component(s)`);
+      for (const file of componentFiles) {
+        const sourcePath = path.join(componentsDir, file);
+        // Components go to src/components/<category>/<name>.json
+        const targetPath = path.join(strapiDir, "src", "components", file);
+        await fs.ensureDir(path.dirname(targetPath));
+        await fs.copy(sourcePath, targetPath);
+        console.log(`   ✓ Component: ${file}`);
+      }
+    }
+  }
 
   const schemaFiles = await glob("*.json", {
     cwd: schemaDir,
@@ -387,7 +499,7 @@ async function uploadAllImages(
     return mediaMap;
   }
 
-  const imageFiles = await glob("**/*.{jpg,jpeg,png,gif,webp,svg}", {
+  const imageFiles = await glob("**/*.{jpg,jpeg,png,gif,webp,avif,svg}", {
     cwd: imagesDir,
     absolute: false
   });
@@ -407,8 +519,7 @@ async function uploadAllImages(
 
     if (existingId) {
       // Use existing media ID
-      mediaMap.set(`/images/${imageFile}`, existingId);
-      mediaMap.set(imageFile, existingId);
+      addMediaMapEntries(mediaMap, imageFile, existingId);
       skippedCount++;
       continue;
     }
@@ -418,8 +529,7 @@ async function uploadAllImages(
     const mediaId = await uploadImage(imagePath, imageFile, strapiUrl, apiToken);
 
     if (mediaId) {
-      mediaMap.set(`/images/${imageFile}`, mediaId);
-      mediaMap.set(imageFile, mediaId);
+      addMediaMapEntries(mediaMap, imageFile, mediaId);
       uploadedCount++;
       console.log(`   ✓ ${imageFile}`);
     }
@@ -481,6 +591,7 @@ function getMimeType(fileName: string): string {
     ".png": "image/png",
     ".gif": "image/gif",
     ".webp": "image/webp",
+    ".avif": "image/avif",
     ".svg": "image/svg+xml"
   };
   return mimeTypes[ext] || "application/octet-stream";
@@ -573,14 +684,19 @@ function processMediaFields(data: any, mediaMap: Map<string, number>): any {
       // Check if this is an image path
       if (
         key.includes("image") ||
+        key.includes("img") ||
         key.includes("bg") ||
-        value.startsWith("/images/")
+        value.startsWith("/images/") ||
+        value.startsWith("images/") ||
+        value.startsWith("/assets/images/") ||
+        value.startsWith("assets/images/") ||
+        isLikelyImagePath(value)
       ) {
-        const mediaId = mediaMap.get(value);
+        const mediaId = findMediaId(mediaMap, value);
         if (mediaId) {
           processed[key] = mediaId;
         } else {
-          processed[key] = value; // Keep original if not found
+          processed[key] = null;
         }
       } else {
         processed[key] = value;
@@ -591,6 +707,20 @@ function processMediaFields(data: any, mediaMap: Map<string, number>): any {
   }
 
   return processed;
+}
+
+function addMediaMapEntries(mediaMap: Map<string, number>, imageFile: string, mediaId: number): void {
+  for (const key of mediaLookupKeys(imageFile)) {
+    mediaMap.set(key, mediaId);
+  }
+}
+
+function findMediaId(mediaMap: Map<string, number>, value: string): number | undefined {
+  for (const key of mediaLookupKeys(value)) {
+    const mediaId = mediaMap.get(key);
+    if (mediaId) return mediaId;
+  }
+  return undefined;
 }
 
 /**
