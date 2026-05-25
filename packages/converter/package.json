@@ -1,6 +1,6 @@
 {
   "name": "@see-ms/converter",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "CLI for converting HTML files to Nuxt 3 with CMS integration",
   "main": "./dist/index.mjs",
   "types": "./dist/index.d.mts",
