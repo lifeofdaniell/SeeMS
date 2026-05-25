@@ -11,6 +11,7 @@ import path from "path";
 import { glob } from "glob";
 import type { SharedComponent } from "@see-ms/types";
 import { htmlPathToPageId } from "./routes";
+import { normalizePublicAssetPath } from "./assets";
 
 /**
  * Parsed page with its HTML content
@@ -474,6 +475,7 @@ export function createVueComponent(component: ExtractedComponent): string {
   html = html.replace(/\s*data-w-id="[^"]*"/g, "");
   html = html.replace(/\s*data-wf-page="[^"]*"/g, "");
   html = html.replace(/\s*data-wf-site="[^"]*"/g, "");
+  html = sanitizeVueComponentHtml(html);
 
   return `<script setup lang="ts">
 /**
@@ -493,6 +495,23 @@ ${html}
 /* Component-specific styles if needed */
 </style>
 `;
+}
+
+function sanitizeVueComponentHtml(html: string): string {
+  const $ = cheerio.load(html);
+
+  $("script, style").remove();
+  $("img").each((_, el) => {
+    const $el = $(el);
+    const src = $el.attr("src");
+    if (src) {
+      $el.attr("src", normalizePublicAssetPath(src));
+    }
+    $el.removeAttr("srcset");
+    $el.removeAttr("sizes");
+  });
+
+  return $.html();
 }
 
 /**

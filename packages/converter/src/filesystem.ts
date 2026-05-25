@@ -178,8 +178,11 @@ export async function writeVueComponent(
     const vuePath = path.join(componentDir, vueName);
     const astroPath = path.join(astroPagesDir, astroName);
     const relativeVueImport = ensureRelativeImport(path.relative(path.dirname(astroPath), vuePath));
-    const cssImports = cssFiles
-      .map(file => `import '${ensureRelativeImport(path.relative(path.dirname(astroPath), path.join(outputDir, 'assets', 'css', path.relative('css', file))))}';`)
+    const cssLinks = [
+      ...cssFiles.map(file => `/assets/css/${path.basename(file)}`),
+      '/assets/css/main.css',
+    ]
+      .map(href => `<link rel="stylesheet" href="${href}" />`)
       .join('\n');
     const editorScript = editorEnabled ? "\n<script>\n  import '../cms-editor';\n</script>\n" : "";
 
@@ -188,10 +191,10 @@ export async function writeVueComponent(
     await fs.writeFile(vuePath, content, 'utf-8');
     await fs.writeFile(astroPath, `---
 import Page from '${relativeVueImport}';
-${cssImports}
 ---
 
-<Page client:load />
+${cssLinks}
+<Page client:only="vue" />
 ${editorScript}
 `, 'utf-8');
     return;

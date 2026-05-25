@@ -5,7 +5,7 @@
 
 import * as cheerio from "cheerio";
 import path from "path";
-import { normalizeAssetUrl, toOriginalImageCandidate } from "./assets";
+import { normalizePublicAssetPath } from "./assets";
 
 export interface ParsedPage {
   fileName: string;
@@ -68,25 +68,6 @@ function normalizeRoute(href: string, currentFile?: string): string {
  * - ../images/logo.svg -> /assets/images/logo.svg
  * - /assets/../images/logo.svg -> /assets/images/logo.svg
  */
-function normalizeAssetPath(src: string): string {
-  if (!src || src.startsWith("http") || src.startsWith("https")) {
-    return src;
-  }
-
-  // Remove any ../ or ./ at the start
-  let normalized = normalizeAssetUrl(src).replace(/^(\.\.\/)+/, "").replace(/^\.\//, "");
-  normalized = toOriginalImageCandidate(normalized);
-
-  // If it already starts with /assets/, clean up any ../ in the middle
-  if (normalized.startsWith("/assets/")) {
-    normalized = normalized.replace(/\/\.\.\//g, "/");
-    return normalized;
-  }
-
-  // Otherwise, add /assets/ prefix
-  return `/assets/${normalized}`;
-}
-
 /**
  * Parse a Webflow HTML file
  */
@@ -169,8 +150,13 @@ export function parseHTML(html: string, fileName: string): ParsedPage {
  * - Remove any remaining html/head/body tags
  * - Remove srcset and sizes attributes from images
  */
-export function transformForNuxt(html: string, currentFile?: string): string {
+export function transformForNuxt(
+  html: string,
+  currentFile?: string,
+  options: { linkMode?: "nuxt" | "anchor" } = {}
+): string {
   const $ = cheerio.load(html);
+  const linkMode = options.linkMode || "nuxt";
 
   // Remove any html, head, body tags that might have leaked through
   $("html, head, body").each((_, el) => {
@@ -195,7 +181,7 @@ export function transformForNuxt(html: string, currentFile?: string): string {
       href.startsWith("tel:") ||
       href.startsWith("#");
 
-    if (!isExternal) {
+    if (!isExternal && linkMode === "nuxt") {
       // Normalize the route
       const route = normalizeRoute(href, currentFile);
       const content = $el.html();
@@ -208,6 +194,8 @@ export function transformForNuxt(html: string, currentFile?: string): string {
         .join(" ");
 
       $el.replaceWith(`<nuxt-link ${attrString}>${content}</nuxt-link>`);
+    } else if (!isExternal) {
+      $el.attr("href", normalizeRoute(href, currentFile));
     }
   });
 
@@ -218,7 +206,7 @@ export function transformForNuxt(html: string, currentFile?: string): string {
 
     if (src) {
       // Normalize the asset path
-      const normalizedSrc = normalizeAssetPath(src);
+      const normalizedSrc = normalizePublicAssetPath(src);
       $el.attr("src", normalizedSrc);
     }
 

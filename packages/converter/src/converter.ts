@@ -167,7 +167,9 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
             }
 
             // Transform HTML for Nuxt
-            const transformed = transformForNuxt(parsed.htmlContent, htmlFile);
+            const transformed = transformForNuxt(parsed.htmlContent, htmlFile, {
+                linkMode: target === 'astro-vue' ? 'anchor' : 'nuxt',
+            });
 
             // Get shared component imports for this page
             const componentImports = pageComponentMap.get(pageName);

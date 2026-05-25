@@ -18,6 +18,21 @@ export function normalizeAssetUrl(value: string): string {
   }
 }
 
+export function normalizePublicAssetPath(src: string): string {
+  if (!src || /^(https?:)?\/\//i.test(src) || src.startsWith("data:")) {
+    return src;
+  }
+
+  let normalized = normalizeAssetUrl(src).replace(/^(\.\.\/)+/, "").replace(/^\.\//, "");
+  normalized = toOriginalImageCandidate(normalized);
+
+  if (normalized.startsWith("/assets/")) {
+    return normalized.replace(/\/\.\.\//g, "/");
+  }
+
+  return `/assets/${normalized.replace(/^\/+/, "")}`;
+}
+
 export function normalizeImageSeedPath(imageSrc: string): string {
   if (!imageSrc) return "";
   if (/^(https?:)?\/\//i.test(imageSrc) || imageSrc.startsWith("data:")) return imageSrc;
