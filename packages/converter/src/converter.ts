@@ -42,6 +42,7 @@ import * as cheerio from 'cheerio';
 import { analyzeWebflowExport, createConversionReport, writeConversionReport } from './analyzer';
 import { loadSeeMSConfig, mergeConfig, normalizeConfig, writeSeeMSConfig } from './config';
 import { getPageRouteInfo, htmlPathToPageId } from './routes';
+import { writeConversionState, hashSourceFiles } from './conversion-state';
 import {
     getGeneratedAssetFiles,
     getGeneratedPageFiles,
@@ -382,6 +383,16 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
             console.log(pc.green(`  ✓ Removed ${removedStaleFiles.length} stale generated files`));
         }
         await writeGeneratedFileState(outputDir, target, generatedFiles);
+        await writeConversionState(outputDir, {
+            inputDir,
+            target,
+            extractComponents: config.components?.enabled !== false,
+            collections: (config.collections || []).map(c => ({
+                className: c.className,
+                name: c.name || c.className,
+            })),
+            sources: await hashSourceFiles(inputDir),
+        });
 
         // Success!
         console.log(pc.green('\n✅ Conversion completed successfully!'));

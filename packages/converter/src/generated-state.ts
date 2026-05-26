@@ -46,6 +46,10 @@ export function reportMdPath(outputDir: string): string {
   return path.join(outputDir, STATE_DIR, "report.md");
 }
 
+export function conversionStatePath(outputDir: string): string {
+  return path.join(outputDir, STATE_DIR, "state.json");
+}
+
 function legacyStatePath(outputDir: string): string {
   return path.join(outputDir, LEGACY_STATE_FILE);
 }
