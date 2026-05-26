@@ -26,6 +26,9 @@ npx @see-ms/converter convert ./webflow-export ./nuxt-site \
   --scaffold-strapi ./strapi-app
 ```
 
+`setup-strapi` also installs the generated Strapi bootstrap automatically, so public read permissions are configured on
+Strapi startup without manually copying `strapi-bootstrap/index.ts`.
+
 ---
 
 ## 📦 Packages

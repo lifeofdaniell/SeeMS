@@ -37,6 +37,7 @@ export interface StrapiScaffoldOptions {
 }
 
 const ENV_FILE = ".env";
+const SEEMS_BOOTSTRAP_MARKER = "SeeMS public permissions bootstrap";
 
 /**
  * Load config from .env file in project directory
@@ -132,15 +133,20 @@ export async function completeSetup(options: SetupOptions): Promise<void> {
   await installSchemas(projectDir, strapiDir);
   console.log("✓ Schemas installed\n");
 
-  // Step 2: Wait for user to restart Strapi
-  console.log("⏸️  Step 2: Restart Strapi to load schemas");
+  // Step 2: Install bootstrap
+  console.log("🔓 Step 2: Installing Strapi bootstrap...");
+  await installStrapiBootstrap(projectDir, strapiDir);
+  console.log("✓ Bootstrap installed\n");
+
+  // Step 3: Wait for user to restart Strapi
+  console.log("⏸️  Step 3: Restart Strapi to load schemas and bootstrap");
   console.log("   Run: npm run develop (in Strapi directory)");
   console.log("   Press Enter when Strapi is running...");
 
   await waitForEnter();
 
-  // Step 3: Check Strapi is running
-  console.log("\n🔍 Step 3: Checking Strapi connection...");
+  // Step 4: Check Strapi is running
+  console.log("\n🔍 Step 4: Checking Strapi connection...");
   const isRunning = await checkStrapiRunning(strapiUrl);
 
   if (!isRunning) {
@@ -151,14 +157,14 @@ export async function completeSetup(options: SetupOptions): Promise<void> {
 
   console.log("✓ Connected to Strapi\n");
 
-  // Step 4: Get API token
+  // Step 5: Get API token
   let token = optionToken || (!ignoreSavedToken ? savedConfig.apiToken : undefined);
   if (token && !ignoreSavedToken) {
-    console.log("🔑 Step 4: Using saved API token");
+    console.log("🔑 Step 5: Using saved API token");
   } else if (token && optionToken) {
-    console.log("🔑 Step 4: Using provided API token");
+    console.log("🔑 Step 5: Using provided API token");
   } else {
-    console.log("🔑 Step 4: API Token needed");
+    console.log("🔑 Step 5: API Token needed");
     console.log("   1. Open Strapi admin: http://localhost:1337/admin");
     console.log("   2. Go to Settings > API Tokens > Create new API Token");
     console.log("   3. Name: \"Seed Script\", Type: \"Full access\", Duration: \"Unlimited\"");
@@ -175,13 +181,13 @@ export async function completeSetup(options: SetupOptions): Promise<void> {
     console.log("");
   }
 
-  // Step 5: Upload images
-  console.log("📸 Step 5: Uploading images...");
+  // Step 6: Upload images
+  console.log("📸 Step 6: Uploading images...");
   const mediaMap = await uploadAllImages(projectDir, strapiUrl, token);
   console.log(`✓ Mapped ${mediaMap.size} media lookup keys\n`);
 
-  // Step 6: Seed content
-  console.log("📝 Step 6: Seeding content...");
+  // Step 7: Seed content
+  console.log("📝 Step 7: Seeding content...");
   await seedContent(projectDir, strapiUrl, token, mediaMap);
   console.log("✓ Content seeded\n");
 
@@ -371,6 +377,165 @@ async function installSchemas(
       console.error(`   ✗ Failed to install ${singularName}: ${error.message}`);
     }
   }
+}
+
+async function installStrapiBootstrap(projectDir: string, strapiDir: string): Promise<void> {
+  const sourcePath = path.join(projectDir, "strapi-bootstrap", "index.ts");
+  if (!(await fs.pathExists(sourcePath))) {
+    console.log("   No generated Strapi bootstrap found, skipping");
+    return;
+  }
+
+  const srcDir = path.join(strapiDir, "src");
+  const targetPath = path.join(srcDir, "index.ts");
+  await fs.ensureDir(srcDir);
+
+  if (!(await fs.pathExists(targetPath))) {
+    await fs.copy(sourcePath, targetPath);
+    console.log("   ✓ Created src/index.ts");
+    return;
+  }
+
+  const existing = await fs.readFile(targetPath, "utf-8");
+  if (
+    existing.includes(SEEMS_BOOTSTRAP_MARKER) ||
+    existing.includes("enableSeeMSPublicPermissions") ||
+    existing.includes("Auto-enables public read permissions for all CMS content types")
+  ) {
+    console.log("   ✓ SeeMS bootstrap already installed");
+    return;
+  }
+
+  const backupPath = `${targetPath}.before-see-ms-${Date.now()}.bak`;
+  await fs.copy(targetPath, backupPath);
+
+  const merged = mergeBootstrap(existing);
+  if (!merged) {
+    const helperPath = path.join(srcDir, "index.see-ms.ts");
+    await fs.copy(sourcePath, helperPath);
+    console.log("   ⚠ Could not safely merge existing src/index.ts");
+    console.log(`   ✓ Left existing file unchanged and wrote ${path.relative(strapiDir, helperPath)}`);
+    console.log(`   ✓ Backup saved to ${path.relative(strapiDir, backupPath)}`);
+    return;
+  }
+
+  await fs.writeFile(targetPath, merged, "utf-8");
+  console.log("   ✓ Merged SeeMS bootstrap into existing src/index.ts");
+  console.log(`   ✓ Backup saved to ${path.relative(strapiDir, backupPath)}`);
+}
+
+function mergeBootstrap(existing: string): string | null {
+  const helper = renderSeeMSBootstrapHelper();
+
+  if (/async\s+bootstrap\s*\([^)]*\)\s*\{/.test(existing)) {
+    return `${helper}\n\n${existing.replace(
+      /async\s+bootstrap\s*\([^)]*\)\s*\{/,
+      (match) => `${match}\n    const seeMSStrapi = typeof strapi !== 'undefined' ? strapi : arguments[0]?.strapi;\n    await enableSeeMSPublicPermissions(seeMSStrapi);`
+    )}`;
+  }
+
+  if (/bootstrap\s*\([^)]*\)\s*\{/.test(existing)) {
+    return `${helper}\n\n${existing.replace(
+      /bootstrap\s*\([^)]*\)\s*\{/,
+      (match) => `async ${match}\n    const seeMSStrapi = typeof strapi !== 'undefined' ? strapi : arguments[0]?.strapi;\n    await enableSeeMSPublicPermissions(seeMSStrapi);`
+    )}`;
+  }
+
+  if (/export\s+default\s+\{/.test(existing)) {
+    return existing.replace(
+      /export\s+default\s+\{/,
+      `${helper}\nexport default {\n  async bootstrap({ strapi }: { strapi: any }) {\n    await enableSeeMSPublicPermissions(strapi);\n  },`
+    );
+  }
+
+  return null;
+}
+
+function renderSeeMSBootstrapHelper(): string {
+  return `
+async function enableSeeMSPublicPermissions(strapi: any) {
+  // ${SEEMS_BOOTSTRAP_MARKER}
+  try {
+    console.log('[SeeMS Bootstrap] Configuring public permissions for CMS...');
+
+    const publicRole = await strapi
+      .query('plugin::users-permissions.role')
+      .findOne({ where: { type: 'public' } });
+
+    if (!publicRole) {
+      console.error('[SeeMS Bootstrap] Public role not found');
+      return;
+    }
+
+    const contentTypes = Object.keys(strapi.contentTypes).filter((uid) => uid.startsWith('api::'));
+    const permissions = await strapi
+      .query('plugin::users-permissions.permission')
+      .findMany({ where: { role: publicRole.id } });
+
+    let updatedCount = 0;
+
+    for (const contentType of contentTypes) {
+      const [, apiName] = contentType.split('::');
+      const [controllerName] = apiName.split('.');
+
+      const findPermission = permissions.find(
+        (permission: any) =>
+          permission.action === \`api::\${apiName}.find\` ||
+          (permission.action === 'find' && permission.controller === controllerName)
+      );
+      const findOnePermission = permissions.find(
+        (permission: any) =>
+          permission.action === \`api::\${apiName}.findOne\` ||
+          (permission.action === 'findOne' && permission.controller === controllerName)
+      );
+
+      if (findPermission && !findPermission.enabled) {
+        await strapi.query('plugin::users-permissions.permission').update({
+          where: { id: findPermission.id },
+          data: { enabled: true },
+        });
+        updatedCount++;
+      }
+
+      if (findOnePermission && !findOnePermission.enabled) {
+        await strapi.query('plugin::users-permissions.permission').update({
+          where: { id: findOnePermission.id },
+          data: { enabled: true },
+        });
+        updatedCount++;
+      }
+
+      if (!findPermission) {
+        await strapi.query('plugin::users-permissions.permission').create({
+          data: {
+            action: \`api::\${apiName}.find\`,
+            role: publicRole.id,
+            enabled: true,
+          },
+        });
+        updatedCount++;
+      }
+
+      if (!findOnePermission) {
+        await strapi.query('plugin::users-permissions.permission').create({
+          data: {
+            action: \`api::\${apiName}.findOne\`,
+            role: publicRole.id,
+            enabled: true,
+          },
+        });
+        updatedCount++;
+      }
+    }
+
+    console.log(
+      \`[SeeMS Bootstrap] Enabled \${updatedCount} public permissions for \${contentTypes.length} content types\`
+    );
+  } catch (error) {
+    console.error('[SeeMS Bootstrap] Error enabling public permissions:', error);
+  }
+}
+`.trim();
 }
 
 /**

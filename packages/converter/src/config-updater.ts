@@ -5,6 +5,11 @@
 import fs from 'fs-extra';
 import path from 'path';
 
+const CSS_BLOCK_START = '    // SeeMS generated CSS start';
+const CSS_BLOCK_END = '    // SeeMS generated CSS end';
+const EMBEDDED_STYLES_START = '/* SeeMS generated embedded styles start */';
+const EMBEDDED_STYLES_END = '/* SeeMS generated embedded styles end */';
+
 /**
  * Generate the webflow-assets.ts Vite plugin
  */
@@ -79,23 +84,22 @@ export async function updateNuxtConfig(
   // Read existing config
   let config = await fs.readFile(configPath, 'utf-8');
 
-  // Generate CSS array entries
-  const cssEntries = cssFiles.map(file => `    '~/assets/css/${path.basename(file)}'`);
+  const cssEntries = cssFiles.map(file => `    '~/assets/css/${path.basename(file)}',`);
+  const cssBlock = `${CSS_BLOCK_START}\n${cssEntries.join('\n')}\n${CSS_BLOCK_END}`;
+
+  config = removeManagedCssBlock(config);
+  config = removeLegacyCssEntries(config, cssFiles);
 
   // Check if css array exists
   if (config.includes('css:')) {
-    // Find the css array and add our files
-    // This is a simple approach - we'll add them at the end of the array
     config = config.replace(
       /css:\s*\[/,
-      `css: [\n${cssEntries.join(',\n')},`
+      `css: [\n${cssBlock},`
     );
   } else {
-    // Add css array to the config
-    // Find the export default defineNuxtConfig({
     config = config.replace(
       /export default defineNuxtConfig\(\{/,
-      `export default defineNuxtConfig({\n  css: [\n${cssEntries.join(',\n')}\n  ],`
+      `export default defineNuxtConfig({\n  css: [\n${cssBlock}\n  ],`
     );
   }
 
@@ -121,12 +125,11 @@ export async function writeEmbeddedStyles(
   const exists = await fs.pathExists(mainCssPath);
 
   if (exists) {
-    // Append to existing main.css
     const existing = await fs.readFile(mainCssPath, 'utf-8');
-    await fs.writeFile(mainCssPath, `${existing}\n\n/* Webflow Embedded Styles */\n${styles}`, 'utf-8');
+    const withoutManagedBlock = removeManagedEmbeddedStyles(existing).trimEnd();
+    await fs.writeFile(mainCssPath, `${withoutManagedBlock}\n\n${renderEmbeddedStyles(styles)}`, 'utf-8');
   } else {
-    // Create new main.css
-    await fs.writeFile(mainCssPath, `/* Webflow Embedded Styles */\n${styles}`, 'utf-8');
+    await fs.writeFile(mainCssPath, renderEmbeddedStyles(styles), 'utf-8');
   }
 }
 
@@ -148,6 +151,10 @@ export async function addStrapiUrlToConfig(
 
   // Read existing config
   let config = await fs.readFile(configPath, 'utf-8');
+
+  if (/strapiUrl\s*:/.test(config)) {
+    return;
+  }
 
   // Check if runtimeConfig already exists
   if (config.includes('runtimeConfig:')) {
@@ -176,4 +183,39 @@ export async function addStrapiUrlToConfig(
 
   // Write updated config
   await fs.writeFile(configPath, config, 'utf-8');
+}
+
+function removeManagedCssBlock(config: string): string {
+  const blockPattern = new RegExp(
+    `\\n?\\s*// SeeMS generated CSS start[\\s\\S]*?\\s*// SeeMS generated CSS end,?`,
+    'g'
+  );
+  return config.replace(blockPattern, '');
+}
+
+function removeLegacyCssEntries(config: string, cssFiles: string[]): string {
+  let updated = config;
+
+  for (const file of cssFiles) {
+    const escapedEntry = escapeRegExp(`~/assets/css/${path.basename(file)}`);
+    updated = updated.replace(new RegExp(`\\n\\s*['"]${escapedEntry}['"],?`, 'g'), '');
+  }
+
+  return updated;
+}
+
+function removeManagedEmbeddedStyles(css: string): string {
+  const blockPattern = new RegExp(
+    `\\n?${escapeRegExp(EMBEDDED_STYLES_START)}[\\s\\S]*?${escapeRegExp(EMBEDDED_STYLES_END)}\\n?`,
+    'g'
+  );
+  return css.replace(blockPattern, '\n');
+}
+
+function renderEmbeddedStyles(styles: string): string {
+  return `${EMBEDDED_STYLES_START}\n${styles.trim()}\n${EMBEDDED_STYLES_END}`;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

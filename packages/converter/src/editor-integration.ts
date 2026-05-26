@@ -712,9 +712,10 @@ export async function createStrapiBootstrap(outputDir: string): Promise<void> {
 
   const bootstrapContent = `/**
  * Strapi Bootstrap File
- * Auto-enables public read permissions for all single types
+ * Auto-enables public read permissions for all CMS content types
+ * SeeMS public permissions bootstrap
  *
- * Place this file in your Strapi project at: src/index.ts
+ * Installed automatically by cms setup-strapi.
  */
 
 export default {
@@ -723,7 +724,7 @@ export default {
    */
   async bootstrap({ strapi }: { strapi: any }) {
     try {
-      console.log('[Bootstrap] Configuring public permissions for CMS...');
+      console.log('[SeeMS Bootstrap] Configuring public permissions for CMS...');
 
       // Get the public role
       const publicRole = await strapi
@@ -731,7 +732,7 @@ export default {
         .findOne({ where: { type: 'public' } });
 
       if (!publicRole) {
-        console.error('[Bootstrap] Public role not found');
+        console.error('[SeeMS Bootstrap] Public role not found');
         return;
       }
 
@@ -815,10 +816,10 @@ export default {
       }
 
       console.log(
-        \`[Bootstrap] ✅ Enabled \${updatedCount} public permissions for \${contentTypes.length} content types\`
+        \`[SeeMS Bootstrap] Enabled \${updatedCount} public permissions for \${contentTypes.length} content types\`
       );
     } catch (error) {
-      console.error('[Bootstrap] Error enabling public permissions:', error);
+      console.error('[SeeMS Bootstrap] Error enabling public permissions:', error);
     }
   },
 };
@@ -834,20 +835,26 @@ This file automatically enables public read permissions for all CMS content type
 
 ## Installation
 
-1. Copy the \`index.ts\` file to your Strapi project:
+The \`cms setup-strapi\` command installs this bootstrap automatically:
+
    \`\`\`bash
-   cp strapi-bootstrap/index.ts <your-strapi-project>/src/index.ts
+   cms setup-strapi <converted-project> <your-strapi-project>
    \`\`\`
 
-2. Restart Strapi:
+If your Strapi project does not already have \`src/index.ts\`, setup creates it.
+If it already exists, setup backs it up and merges the SeeMS public-permissions bootstrap into the existing file when it can do so safely.
+
+Restart Strapi after setup installs schemas and bootstrap:
+
    \`\`\`bash
    cd <your-strapi-project>
    npm run develop
    \`\`\`
 
-3. Check the console logs - you should see:
+Check the console logs - you should see:
+
    \`\`\`
-   [Bootstrap] ✅ Enabled X public permissions for Y content types
+   [SeeMS Bootstrap] Enabled X public permissions for Y content types
    \`\`\`
 
 ## What It Does

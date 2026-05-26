@@ -10,6 +10,7 @@ import pc from "picocolors";
 import * as readline from "readline";
 import fs from "fs-extra";
 import path from "path";
+import { fileURLToPath } from "url";
 import { convertWebflowExport } from "./converter";
 import { completeSetup, scaffoldStrapiProject } from "./strapi-setup";
 import { manifestToSchemas, getLinkComponentSchema } from "./transformer";
@@ -20,6 +21,8 @@ import type { CMSManifest, ConversionReport, SeeMSConfig } from "@see-ms/types";
 import type { ProjectTarget } from "./boilerplate";
 
 const program = new Command();
+const packageDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const packageVersion = fs.readJsonSync(path.join(packageDir, "package.json")).version;
 
 /**
  * Collection class with its display name
@@ -235,7 +238,7 @@ async function promptForComponentRules(existing: ComponentRuleConfig[] = []): Pr
 program
   .name("cms")
   .description("SeeMS - Webflow to CMS converter")
-  .version("0.1.3");
+  .version(packageVersion);
 
 program
   .command("convert")

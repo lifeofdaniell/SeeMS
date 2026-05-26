@@ -42,6 +42,16 @@ import * as cheerio from 'cheerio';
 import { analyzeWebflowExport, createConversionReport, writeConversionReport } from './analyzer';
 import { loadSeeMSConfig, mergeConfig, normalizeConfig, writeSeeMSConfig } from './config';
 import { getPageRouteInfo, htmlPathToPageId } from './routes';
+import {
+    getGeneratedAssetFiles,
+    getGeneratedPageFiles,
+    getGeneratedRuntimeFiles,
+    keepPreviousNonPageFiles,
+    loadGeneratedFileState,
+    removeStaleGeneratedFiles,
+    toProjectPath,
+    writeGeneratedFileState,
+} from './generated-state';
 
 export async function convertWebflowExport(options: ConversionOptions): Promise<void> {
     const { inputDir, outputDir, boilerplate } = options;
@@ -65,10 +75,13 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
         const analysis = await analyzeWebflowExport(inputDir, config);
         await setupBoilerplate(boilerplate, outputDir, target);
         await writeSeeMSConfig(outputDir, config);
+        const previousGeneratedState = await loadGeneratedFileState(outputDir);
+        const generatedFiles = new Set<string>(getGeneratedRuntimeFiles(target, editorEnabled));
 
         // Step 1: Scan for assets
         console.log(pc.blue('\n📂 Scanning assets...'));
         const assets = analysis.assets;
+        getGeneratedAssetFiles(assets).forEach((file) => generatedFiles.add(file));
         console.log(pc.green(`  ✓ Found ${assets.css.length} CSS files`));
         console.log(pc.green(`  ✓ Found ${assets.images.length} images`));
         console.log(pc.green(`  ✓ Found ${assets.fonts.length} fonts`));
@@ -82,7 +95,17 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
         // Step 3: Find all HTML files (including in subfolders)
         console.log(pc.blue('\n🔍 Finding HTML files...'));
         const htmlFiles = analysis.pages.map((page) => page.sourcePath);
+        getGeneratedPageFiles(htmlFiles, target).forEach((file) => generatedFiles.add(file));
         console.log(pc.green(`  ✓ Found ${htmlFiles.length} HTML files`));
+
+        const removedStalePageFiles = await removeStaleGeneratedFiles(
+            outputDir,
+            previousGeneratedState,
+            keepPreviousNonPageFiles(previousGeneratedState, generatedFiles)
+        );
+        if (removedStalePageFiles.length > 0) {
+            console.log(pc.green(`  ✓ Removed ${removedStalePageFiles.length} stale generated page files`));
+        }
 
         // Step 5: Read and store HTML content (before converting to Vue)
         // We need this for content extraction later
@@ -116,6 +139,9 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
         const pageComponentMap = new Map<string, string[]>();
 
         if (sharedComponents.length > 0) {
+            sharedComponents.forEach((component) => {
+                generatedFiles.add(toProjectPath(path.join('components', `${component.name}.vue`)));
+            });
             console.log(pc.green(`  ✓ Extracted ${sharedComponents.length} shared components:`));
             for (const component of sharedComponents) {
                 console.log(pc.dim(`    - ${component.name} (found in ${component.pages.length} pages)`));
@@ -269,18 +295,27 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
         // Step 10: Generate Strapi schemas
         console.log(pc.blue('\n📋 Generating Strapi schemas...'));
         const schemas = manifestToSchemas(manifest);
+        Object.keys(schemas).forEach((name) => {
+            generatedFiles.add(toProjectPath(path.join('cms-schemas', `${name}.json`)));
+        });
         await writeAllSchemas(outputDir, schemas);
         await createStrapiReadme(outputDir);
 
         // Write link component schema if any link fields exist
         const linkSchema = getLinkComponentSchema(manifest);
         if (linkSchema) {
+            generatedFiles.add(toProjectPath(path.join('cms-schemas', 'components', 'shared', 'link.json')));
             await writeLinkComponentSchema(outputDir);
             console.log(pc.dim('  ✓ Generated shared.link component schema'));
         }
 
         console.log(pc.green(`  ✓ Generated ${Object.keys(schemas).length} Strapi content types`));
         console.log(pc.dim('    View schemas in: cms-schemas/'));
+
+        if (provider === 'strapi') {
+            await createStrapiBootstrap(outputDir);
+            console.log(pc.green('  ✓ Strapi bootstrap file generated'));
+        }
 
         // Step 11: Deduplicate and write embedded styles to main.css
         if (allEmbeddedStyles.trim()) {
@@ -324,9 +359,7 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
                 console.log(pc.green('  ✓ Astro save/publish endpoints created'));
             }
             await addEditorDependency(outputDir);
-            await createStrapiBootstrap(outputDir);
             console.log(pc.green('  ✓ Editor dependency added'));
-            console.log(pc.green('  ✓ Strapi bootstrap file generated'));
         } else {
             console.log(pc.dim('\n🎨 Editor overlay disabled by config'));
         }
@@ -344,6 +377,11 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
         });
         await writeConversionReport(outputDir, report);
         console.log(pc.green('  ✓ Generated see-ms-report.md and see-ms-report.json'));
+        const removedStaleFiles = await removeStaleGeneratedFiles(outputDir, previousGeneratedState, generatedFiles);
+        if (removedStaleFiles.length > 0) {
+            console.log(pc.green(`  ✓ Removed ${removedStaleFiles.length} stale generated files`));
+        }
+        await writeGeneratedFileState(outputDir, target, generatedFiles);
 
         // Success!
         console.log(pc.green('\n✅ Conversion completed successfully!'));
@@ -351,11 +389,10 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
         console.log(pc.dim(`  1. cd ${outputDir}`));
         console.log(pc.dim('  2. Review cms-manifest.json and cms-seed/seed-data.json'));
         console.log(pc.dim('  3. Set up Strapi and install schemas from cms-schemas/'));
-        console.log(pc.dim('  4. Copy strapi-bootstrap/index.ts to your Strapi project at src/index.ts'));
-        console.log(pc.dim('     (This auto-enables public read permissions on Strapi startup)'));
-        console.log(pc.dim('  5. Seed Strapi with data from cms-seed/'));
-        console.log(pc.dim('  6. pnpm install && pnpm dev'));
-        console.log(pc.dim('  7. Visit http://localhost:3000?preview=true to edit inline!'));
+        console.log(pc.dim('     (setup-strapi installs the generated bootstrap automatically)'));
+        console.log(pc.dim('  4. Seed Strapi with data from cms-seed/'));
+        console.log(pc.dim('  5. pnpm install && pnpm dev'));
+        console.log(pc.dim('  6. Visit http://localhost:3000?preview=true to edit inline!'));
 
     } catch (error) {
         console.error(pc.red('\n❌ Conversion failed:'));

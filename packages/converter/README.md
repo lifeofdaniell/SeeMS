@@ -146,6 +146,10 @@ If you already have Strapi:
 cms setup-strapi ./nuxt-site ./strapi-app
 ```
 
+`setup-strapi` copies generated schemas, installs the generated Strapi bootstrap into `strapi-app/src/index.ts`, uploads
+media, and seeds content. If `src/index.ts` already exists, SeeMS backs it up and merges the public-permissions bootstrap
+when it can do so safely.
+
 If the target Strapi directory does not exist yet, `setup-strapi` can create it:
 
 ```bash
