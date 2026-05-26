@@ -707,7 +707,7 @@ export default defineEventHandler(async (event) => {
  * Create Strapi bootstrap file to auto-enable public permissions
  */
 export async function createStrapiBootstrap(outputDir: string): Promise<void> {
-  const strapiBootstrapDir = path.join(outputDir, "strapi-bootstrap");
+  const strapiBootstrapDir = path.join(outputDir, ".see-ms", "strapi-bootstrap");
   await fs.ensureDir(strapiBootstrapDir);
 
   const bootstrapContent = `/**

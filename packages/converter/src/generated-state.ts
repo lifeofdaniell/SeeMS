@@ -14,7 +14,7 @@ const LEGACY_STATE_FILE = ".see-ms-generated.json";
 const STATE_DIR = ".see-ms";
 const STATE_FILE = "generated.json";
 
-export function toProjectPath(filePath: string): string {
+export function toPosixPath(filePath: string): string {
   return filePath.split(path.sep).join("/");
 }
 
@@ -24,6 +24,26 @@ export function seeMsDir(outputDir: string): string {
 
 export function generatedStatePath(outputDir: string): string {
   return path.join(outputDir, STATE_DIR, STATE_FILE);
+}
+
+export function seedDataPath(outputDir: string): string {
+  return path.join(outputDir, STATE_DIR, "seed", "seed-data.json");
+}
+
+export function schemasDir(outputDir: string): string {
+  return path.join(outputDir, STATE_DIR, "schemas");
+}
+
+export function strapiBootstrapDir(outputDir: string): string {
+  return path.join(outputDir, STATE_DIR, "strapi-bootstrap");
+}
+
+export function reportJsonPath(outputDir: string): string {
+  return path.join(outputDir, STATE_DIR, "report.json");
+}
+
+export function reportMdPath(outputDir: string): string {
+  return path.join(outputDir, STATE_DIR, "report.md");
 }
 
 function legacyStatePath(outputDir: string): string {
@@ -130,35 +150,35 @@ export function keepPreviousNonPageFiles(
 
 export function getGeneratedAssetFiles(assets: AssetPaths): string[] {
   return [
-    ...assets.css.map((file) => toProjectPath(path.join("assets", "css", path.relative("css", file)))),
-    ...assets.images.map((file) => toProjectPath(path.join("public", "assets", "images", path.relative("images", file)))),
-    ...assets.fonts.map((file) => toProjectPath(path.join("public", "assets", "fonts", path.relative("fonts", file)))),
-    ...assets.js.map((file) => toProjectPath(path.join("public", "assets", "js", path.relative("js", file)))),
+    ...assets.css.map((file) => toPosixPath(path.join("assets", "css", path.relative("css", file)))),
+    ...assets.images.map((file) => toPosixPath(path.join("public", "assets", "images", path.relative("images", file)))),
+    ...assets.fonts.map((file) => toPosixPath(path.join("public", "assets", "fonts", path.relative("fonts", file)))),
+    ...assets.js.map((file) => toPosixPath(path.join("public", "assets", "js", path.relative("js", file)))),
   ];
 }
 
 export function getGeneratedPageFiles(htmlFiles: string[], target: ProjectTarget): string[] {
   if (target === "astro-vue") {
     return htmlFiles.flatMap((file) => [
-      toProjectPath(path.join("src", "components", "pages", file.replace(/\.html$/i, ".vue"))),
-      toProjectPath(path.join("src", "pages", file.replace(/\.html$/i, ".astro"))),
+      toPosixPath(path.join("src", "components", "pages", file.replace(/\.html$/i, ".vue"))),
+      toPosixPath(path.join("src", "pages", file.replace(/\.html$/i, ".astro"))),
     ]);
   }
 
-  return htmlFiles.map((file) => toProjectPath(path.join("pages", file.replace(/\.html$/i, ".vue"))));
+  return htmlFiles.map((file) => toPosixPath(path.join("pages", file.replace(/\.html$/i, ".vue"))));
 }
 
 export function getGeneratedRuntimeFiles(target: ProjectTarget, editorEnabled: boolean): string[] {
   const common = [
     "see-ms.config.ts",
     "public/cms-manifest.json",
-    "cms-seed/seed-data.json",
-    "cms-seed/README.md",
-    "cms-schemas/README.md",
-    "strapi-bootstrap/index.ts",
-    "strapi-bootstrap/README.md",
-    "see-ms-report.md",
-    "see-ms-report.json",
+    ".see-ms/seed/seed-data.json",
+    ".see-ms/seed/README.md",
+    ".see-ms/schemas/README.md",
+    ".see-ms/strapi-bootstrap/index.ts",
+    ".see-ms/strapi-bootstrap/README.md",
+    ".see-ms/report.md",
+    ".see-ms/report.json",
   ];
 
   if (target === "astro-vue") {

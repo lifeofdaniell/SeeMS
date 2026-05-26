@@ -5,6 +5,11 @@ import os from "os";
 import {
   seeMsDir,
   generatedStatePath,
+  seedDataPath,
+  schemasDir,
+  strapiBootstrapDir,
+  reportJsonPath,
+  reportMdPath,
   loadGeneratedFileState,
   writeGeneratedFileState,
 } from "../generated-state";
@@ -36,6 +41,30 @@ describe("generatedStatePath", () => {
     expect(generatedStatePath("/projects/my-site")).not.toContain(
       ".see-ms-generated.json"
     );
+  });
+});
+
+describe("path helpers", () => {
+  const out = "/projects/my-site";
+
+  it("seedDataPath points to .see-ms/seed/seed-data.json", () => {
+    expect(seedDataPath(out)).toBe(`${out}/.see-ms/seed/seed-data.json`);
+  });
+
+  it("schemasDir points to .see-ms/schemas", () => {
+    expect(schemasDir(out)).toBe(`${out}/.see-ms/schemas`);
+  });
+
+  it("strapiBootstrapDir points to .see-ms/strapi-bootstrap", () => {
+    expect(strapiBootstrapDir(out)).toBe(`${out}/.see-ms/strapi-bootstrap`);
+  });
+
+  it("reportJsonPath points to .see-ms/report.json", () => {
+    expect(reportJsonPath(out)).toBe(`${out}/.see-ms/report.json`);
+  });
+
+  it("reportMdPath points to .see-ms/report.md", () => {
+    expect(reportMdPath(out)).toBe(`${out}/.see-ms/report.md`);
   });
 });
 

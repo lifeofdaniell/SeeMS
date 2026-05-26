@@ -4,6 +4,7 @@ import type { ConversionReport, SeeMSConfig, SharedComponent } from "@see-ms/typ
 import { scanAssets, findHTMLFiles } from "./filesystem";
 import { getPageRouteInfo, type PageRouteInfo } from "./routes";
 import { findSharedSections, parseAllPages } from "./component-extractor";
+import { seeMsDir, reportJsonPath, reportMdPath } from "./generated-state";
 
 export interface ConversionAnalysis {
   inputDir: string;
@@ -108,9 +109,10 @@ export function createConversionReport(input: {
 }
 
 export async function writeConversionReport(outputDir: string, report: ConversionReport): Promise<void> {
-  const jsonPath = path.join(outputDir, "see-ms-report.json");
-  const mdPath = path.join(outputDir, "see-ms-report.md");
+  const jsonPath = reportJsonPath(outputDir);
+  const mdPath = reportMdPath(outputDir);
 
+  await fs.ensureDir(seeMsDir(outputDir));
   await fs.writeFile(jsonPath, JSON.stringify(report, null, 2), "utf-8");
   await fs.writeFile(mdPath, renderReportMarkdown(report), "utf-8");
 }

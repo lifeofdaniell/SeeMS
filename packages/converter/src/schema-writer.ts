@@ -6,6 +6,7 @@ import fs from 'fs-extra';
 import path from 'path';
 import type { StrapiSchema } from '@see-ms/types';
 import { LINK_COMPONENT_SCHEMA } from './transformer';
+import { schemasDir as getschemasDir } from './generated-state';
 
 /**
  * Write a single Strapi schema to a flat directory
@@ -15,10 +16,10 @@ export async function writeStrapiSchema(
   name: string,
   schema: StrapiSchema
 ): Promise<void> {
-  const schemasDir = path.join(outputDir, 'cms-schemas');
-  await fs.ensureDir(schemasDir);
-  
-  const schemaPath = path.join(schemasDir, `${name}.json`);
+  const dir = getschemasDir(outputDir);
+  await fs.ensureDir(dir);
+
+  const schemaPath = path.join(dir, `${name}.json`);
   await fs.writeFile(schemaPath, JSON.stringify(schema, null, 2), 'utf-8');
 }
 
@@ -39,7 +40,7 @@ export async function writeAllSchemas(
  * This is needed when any field uses the 'link' type
  */
 export async function writeLinkComponentSchema(outputDir: string): Promise<void> {
-  const componentsDir = path.join(outputDir, 'cms-schemas', 'components', 'shared');
+  const componentsDir = path.join(getschemasDir(outputDir), 'components', 'shared');
   await fs.ensureDir(componentsDir);
 
   const schemaPath = path.join(componentsDir, 'link.json');

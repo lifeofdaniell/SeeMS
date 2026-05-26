@@ -49,7 +49,7 @@ import {
     keepPreviousNonPageFiles,
     loadGeneratedFileState,
     removeStaleGeneratedFiles,
-    toProjectPath,
+    toPosixPath,
     writeGeneratedFileState,
 } from './generated-state';
 
@@ -140,7 +140,7 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
 
         if (sharedComponents.length > 0) {
             sharedComponents.forEach((component) => {
-                generatedFiles.add(toProjectPath(path.join('components', `${component.name}.vue`)));
+                generatedFiles.add(toPosixPath(path.join('components', `${component.name}.vue`)));
             });
             console.log(pc.green(`  ✓ Extracted ${sharedComponents.length} shared components:`));
             for (const component of sharedComponents) {
@@ -296,7 +296,7 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
         console.log(pc.blue('\n📋 Generating Strapi schemas...'));
         const schemas = manifestToSchemas(manifest);
         Object.keys(schemas).forEach((name) => {
-            generatedFiles.add(toProjectPath(path.join('cms-schemas', `${name}.json`)));
+            generatedFiles.add(toPosixPath(path.join('.see-ms', 'schemas', `${name}.json`)));
         });
         await writeAllSchemas(outputDir, schemas);
         await createStrapiReadme(outputDir);
@@ -304,7 +304,7 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
         // Write link component schema if any link fields exist
         const linkSchema = getLinkComponentSchema(manifest);
         if (linkSchema) {
-            generatedFiles.add(toProjectPath(path.join('cms-schemas', 'components', 'shared', 'link.json')));
+            generatedFiles.add(toPosixPath(path.join('.see-ms', 'schemas', 'components', 'shared', 'link.json')));
             await writeLinkComponentSchema(outputDir);
             console.log(pc.dim('  ✓ Generated shared.link component schema'));
         }
