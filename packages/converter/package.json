@@ -14,6 +14,8 @@
   "scripts": {
     "dev": "tsup --watch",
     "build": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist"
   },
@@ -21,15 +23,17 @@
     "@see-ms/types": "^0.2.0",
     "cheerio": "^1.0.0-rc.12",
     "commander": "^11.1.0",
+    "form-data": "^4.0.0",
     "fs-extra": "^11.2.0",
     "glob": "^10.3.10",
-    "picocolors": "^1.0.0",
-    "form-data": "^4.0.0"
+    "ignore": "^7.0.5",
+    "picocolors": "^1.0.0"
   },
   "devDependencies": {
     "@types/fs-extra": "^11.0.4",
     "tsup": "^8.0.1",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "vitest": "^4.1.7"
   },
   "publishConfig": {
     "access": "public"
