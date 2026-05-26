@@ -10,29 +10,66 @@ export interface GeneratedFileState {
   files: string[];
 }
 
-const STATE_FILE = ".see-ms-generated.json";
+const LEGACY_STATE_FILE = ".see-ms-generated.json";
+const STATE_DIR = ".see-ms";
+const STATE_FILE = "generated.json";
 
 export function toProjectPath(filePath: string): string {
   return filePath.split(path.sep).join("/");
 }
 
+export function seeMsDir(outputDir: string): string {
+  return path.join(outputDir, STATE_DIR);
+}
+
 export function generatedStatePath(outputDir: string): string {
-  return path.join(outputDir, STATE_FILE);
+  return path.join(outputDir, STATE_DIR, STATE_FILE);
+}
+
+function legacyStatePath(outputDir: string): string {
+  return path.join(outputDir, LEGACY_STATE_FILE);
+}
+
+function parseState(raw: unknown): GeneratedFileState | undefined {
+  if (
+    typeof raw !== "object" ||
+    raw === null ||
+    (raw as Record<string, unknown>).version !== 1 ||
+    !Array.isArray((raw as Record<string, unknown>).files)
+  ) {
+    return undefined;
+  }
+  const state = raw as Record<string, unknown>;
+  return {
+    version: 1,
+    target: state.target === "astro-vue" ? "astro-vue" : "nuxt",
+    updatedAt: typeof state.updatedAt === "string" ? state.updatedAt : new Date().toISOString(),
+    files: (state.files as unknown[]).filter((f): f is string => typeof f === "string"),
+  };
 }
 
 export async function loadGeneratedFileState(outputDir: string): Promise<GeneratedFileState | undefined> {
-  const statePath = generatedStatePath(outputDir);
-  if (!(await fs.pathExists(statePath))) return undefined;
+  const newPath = generatedStatePath(outputDir);
+
+  if (await fs.pathExists(newPath)) {
+    try {
+      return parseState(await fs.readJson(newPath));
+    } catch {
+      return undefined;
+    }
+  }
+
+  // Migrate from legacy flat file
+  const legacyPath = legacyStatePath(outputDir);
+  if (!(await fs.pathExists(legacyPath))) return undefined;
 
   try {
-    const state = await fs.readJson(statePath);
-    if (state?.version !== 1 || !Array.isArray(state.files)) return undefined;
-    return {
-      version: 1,
-      target: state.target === "astro-vue" ? "astro-vue" : "nuxt",
-      updatedAt: typeof state.updatedAt === "string" ? state.updatedAt : new Date().toISOString(),
-      files: state.files.filter((file: unknown) => typeof file === "string"),
-    };
+    const state = parseState(await fs.readJson(legacyPath));
+    if (state) {
+      await fs.ensureDir(seeMsDir(outputDir));
+      await fs.writeJson(newPath, state, { spaces: 2 });
+    }
+    return state;
   } catch {
     return undefined;
   }
@@ -50,6 +87,7 @@ export async function writeGeneratedFileState(
     files: Array.from(new Set(files)).sort(),
   };
 
+  await fs.ensureDir(seeMsDir(outputDir));
   await fs.writeJson(generatedStatePath(outputDir), state, { spaces: 2 });
 }
 
