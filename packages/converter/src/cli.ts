@@ -257,6 +257,7 @@ program
     "CMS backend type (strapi|contentful|sanity)"
   )
   .option("--skip-prompts", "Skip interactive prompts (for CI/CD)")
+  .option("--no-extract", "Skip component extraction — convert HTML as-is without detecting shared components")
   .option("--collection-classes <classes>", "Comma-separated collection class patterns")
   .option("--no-content", "Skip generating initial CMS content")
   .option("--no-editor", "Skip installing and wiring the inline editor")
@@ -292,7 +293,7 @@ program
       let enableEditor = options.editor !== false && loadedConfig.editor?.enabled !== false;
       let target = toProjectTarget(options.target || loadedConfig.target);
       let cmsProvider = options.cms || loadedConfig.cms?.provider || "strapi";
-      let detectComponents = loadedConfig.components?.enabled !== false;
+      let detectComponents = options.noExtract ? false : loadedConfig.components?.enabled !== false;
       let componentMatch = loadedConfig.components?.match || "structure";
       let componentMinOccurrences = loadedConfig.components?.minOccurrences || 2;
       let componentMinPages = loadedConfig.components?.minPages || componentMinOccurrences;
@@ -309,15 +310,17 @@ program
           { label: "Strapi", value: "strapi" }
         ], cmsProvider);
 
-        detectComponents = await confirm(pc.cyan("Extract shared components from repeated sections?"), detectComponents);
-        if (detectComponents) {
-          componentMatch = await select(pc.cyan("🧩 How strict should component matching be?"), [
-            { label: "Exact repeated HTML blocks", value: "exact" },
-            { label: "Matching DOM structure", value: "structure" }
-          ], componentMatch) as "exact" | "structure";
-          componentMinOccurrences = Number(await prompt(pc.cyan(`Minimum total occurrences (${componentMinOccurrences}): `))) || componentMinOccurrences;
-          componentMinPages = Number(await prompt(pc.cyan(`Minimum pages (${componentMinPages}): `))) || componentMinPages;
-          componentRules = await promptForComponentRules(componentRules);
+        if (!options.noExtract) {
+          detectComponents = await confirm(pc.cyan("Extract shared components from repeated sections?"), detectComponents);
+          if (detectComponents) {
+            componentMatch = await select(pc.cyan("🧩 How strict should component matching be?"), [
+              { label: "Exact repeated HTML blocks", value: "exact" },
+              { label: "Matching DOM structure", value: "structure" }
+            ], componentMatch) as "exact" | "structure";
+            componentMinOccurrences = Number(await prompt(pc.cyan(`Minimum total occurrences (${componentMinOccurrences}): `))) || componentMinOccurrences;
+            componentMinPages = Number(await prompt(pc.cyan(`Minimum pages (${componentMinPages}): `))) || componentMinPages;
+            componentRules = await promptForComponentRules(componentRules);
+          }
         }
 
         if (options.collectionClasses) {

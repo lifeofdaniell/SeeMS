@@ -1,4 +1,3 @@
-import path from "path";
 import fs from "fs-extra";
 import type { ConversionReport, SeeMSConfig, SharedComponent } from "@see-ms/types";
 import { scanAssets, findHTMLFiles } from "./filesystem";
