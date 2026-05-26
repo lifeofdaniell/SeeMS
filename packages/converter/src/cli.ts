@@ -293,7 +293,7 @@ program
       let enableEditor = options.editor !== false && loadedConfig.editor?.enabled !== false;
       let target = toProjectTarget(options.target || loadedConfig.target);
       let cmsProvider = options.cms || loadedConfig.cms?.provider || "strapi";
-      let detectComponents = options.noExtract ? false : loadedConfig.components?.enabled !== false;
+      let detectComponents = options.extract !== false && loadedConfig.components?.enabled !== false;
       let componentMatch = loadedConfig.components?.match || "structure";
       let componentMinOccurrences = loadedConfig.components?.minOccurrences || 2;
       let componentMinPages = loadedConfig.components?.minPages || componentMinOccurrences;
@@ -310,7 +310,7 @@ program
           { label: "Strapi", value: "strapi" }
         ], cmsProvider);
 
-        if (!options.noExtract) {
+        if (options.extract !== false) {
           detectComponents = await confirm(pc.cyan("Extract shared components from repeated sections?"), detectComponents);
           if (detectComponents) {
             componentMatch = await select(pc.cyan("🧩 How strict should component matching be?"), [
