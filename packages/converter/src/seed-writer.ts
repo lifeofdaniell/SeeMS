@@ -5,6 +5,7 @@
 
 import fs from 'fs-extra';
 import path from 'path';
+import { seedDataPath } from './generated-state';
 
 /**
  * Write seed data to JSON file
@@ -13,10 +14,8 @@ export async function writeSeedData(
     outputDir: string,
     seedData: Record<string, any>
 ): Promise<void> {
-    const seedDir = path.join(outputDir, 'cms-seed');
-    await fs.ensureDir(seedDir);
-
-    const seedPath = path.join(seedDir, 'seed-data.json');
+    const seedPath = seedDataPath(outputDir);
+    await fs.ensureDir(path.dirname(seedPath));
     await fs.writeJson(seedPath, seedData, { spaces: 2 });
 }
 

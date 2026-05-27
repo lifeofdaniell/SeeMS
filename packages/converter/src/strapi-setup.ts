@@ -9,6 +9,7 @@ import { glob } from "glob";
 import * as readline from "readline";
 import { spawn } from "child_process";
 import { isLikelyImagePath, mediaLookupKeys } from "./assets";
+import { seedDataPath, schemasDir, strapiBootstrapDir } from "./generated-state";
 
 // @ts-ignore
 interface SchemaFile {
@@ -287,7 +288,7 @@ async function installSchemas(
     }
   }
 
-  const schemaDir = path.join(projectDir, "cms-schemas");
+  const schemaDir = schemasDir(projectDir);
 
   // Install components first (e.g., shared.link)
   const componentsDir = path.join(schemaDir, "components");
@@ -380,7 +381,7 @@ async function installSchemas(
 }
 
 async function installStrapiBootstrap(projectDir: string, strapiDir: string): Promise<void> {
-  const sourcePath = path.join(projectDir, "strapi-bootstrap", "index.ts");
+  const sourcePath = path.join(strapiBootstrapDir(projectDir), "index.ts");
   if (!(await fs.pathExists(sourcePath))) {
     console.log("   No generated Strapi bootstrap found, skipping");
     return;
@@ -771,7 +772,7 @@ async function seedContent(
   apiToken: string,
   mediaMap: Map<string, number>
 ): Promise<void> {
-  const seedPath = path.join(projectDir, "cms-seed", "seed-data.json");
+  const seedPath = seedDataPath(projectDir);
 
   if (!(await fs.pathExists(seedPath))) {
     console.log("   No seed data found");
@@ -780,12 +781,12 @@ async function seedContent(
 
   const seedData = await fs.readJson(seedPath);
 
-  const schemasDir = path.join(projectDir, "cms-schemas");
+  const localSchemasDir = schemasDir(projectDir);
   const schemas = new Map<string, any>();
 
-  const schemaFiles = await glob("*.json", { cwd: schemasDir });
+  const schemaFiles = await glob("*.json", { cwd: localSchemasDir });
   for (const file of schemaFiles) {
-    const schema = await fs.readJson(path.join(schemasDir, file));
+    const schema = await fs.readJson(path.join(localSchemasDir, file));
     const name = path.basename(file, ".json");
     schemas.set(name, schema);
   }
