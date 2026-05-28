@@ -703,8 +703,12 @@ export function detectEditableFields(
     };
 }
 
+function extractTemplateFromAstro(content: string): string {
+    return content.replace(/^---[\s\S]*?---\n?/, '').trim();
+}
+
 /**
- * Analyze all Vue pages in a directory
+ * Analyze all pages (Vue or Astro) in a directory for CMS fields
  */
 export async function analyzeVuePages(
     pagesDir: string,
@@ -715,18 +719,25 @@ export async function analyzeVuePages(
 }>> {
     const results: Record<string, any> = {};
 
-    const vueFiles = await glob('**/*.vue', { cwd: pagesDir, nodir: true });
+    const pageFiles = await glob('**/*.{vue,astro}', { cwd: pagesDir, nodir: true });
 
-    for (const file of vueFiles) {
+    for (const file of pageFiles) {
+        const filePath = path.join(pagesDir, file);
+        const content = await fs.readFile(filePath, 'utf-8');
+
+        let template: string;
+        let pageName: string;
+
         if (file.endsWith('.vue')) {
-            const filePath = path.join(pagesDir, file);
-            const content = await fs.readFile(filePath, 'utf-8');
-            const template = extractTemplateFromVue(content);
+            template = extractTemplateFromVue(content);
+            pageName = htmlPathToPageId(file.replace(/\.vue$/i, '.html'));
+        } else {
+            template = extractTemplateFromAstro(content);
+            pageName = htmlPathToPageId(file.replace(/\.astro$/i, '.html'));
+        }
 
-            if (template) {
-                const pageName = htmlPathToPageId(file.replace(/\.vue$/i, '.html'));
-                results[pageName] = detectEditableFields(template, options);
-            }
+        if (template) {
+            results[pageName] = detectEditableFields(template, options);
         }
     }
 

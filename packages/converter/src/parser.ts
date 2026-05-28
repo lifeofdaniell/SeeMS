@@ -15,6 +15,54 @@ export interface ParsedPage {
   embeddedStyles: string;
   images: string[];
   links: string[];
+  wfPage?: string;
+  wfSite?: string;
+  bodyClass?: string;
+}
+
+export interface ScriptTag {
+  src: string;
+  integrity?: string;
+  crossorigin?: string;
+}
+
+export interface PageScripts {
+  headCdn: ScriptTag[];
+  headInline: string[];
+  bodyCdn: ScriptTag[];
+  bodyInline: string[];
+}
+
+export function extractPageScripts(html: string): PageScripts {
+  const $ = cheerio.load(html);
+  const headCdn: ScriptTag[] = [];
+  const headInline: string[] = [];
+  const bodyCdn: ScriptTag[] = [];
+  const bodyInline: string[] = [];
+
+  $("head script").each((_, el) => {
+    const $el = $(el);
+    const src = $el.attr("src");
+    if (src) {
+      headCdn.push({ src, integrity: $el.attr("integrity"), crossorigin: $el.attr("crossorigin") });
+    } else {
+      const content = $el.html()?.trim();
+      if (content) headInline.push(content);
+    }
+  });
+
+  $("body script").each((_, el) => {
+    const $el = $(el);
+    const src = $el.attr("src");
+    if (src) {
+      bodyCdn.push({ src, integrity: $el.attr("integrity"), crossorigin: $el.attr("crossorigin") });
+    } else {
+      const content = $el.html()?.trim();
+      if (content) bodyInline.push(content);
+    }
+  });
+
+  return { headCdn, headInline, bodyCdn, bodyInline };
 }
 
 /**
@@ -76,6 +124,11 @@ export function parseHTML(html: string, fileName: string): ParsedPage {
 
   // Extract page title
   const title = $("title").text() || fileName.replace(".html", "");
+
+  // Extract Webflow page/site identifiers and body class for Astro wrappers
+  const wfPage = $("html").attr("data-wf-page");
+  const wfSite = $("html").attr("data-wf-site");
+  const bodyClass = $("body").attr("class") || "";
 
   // Find all CSS files
   const cssFiles: string[] = [];
@@ -139,7 +192,10 @@ export function parseHTML(html: string, fileName: string): ParsedPage {
     cssFiles,
     embeddedStyles,
     images,
-    links
+    links,
+    wfPage,
+    wfSite,
+    bodyClass,
   };
 }
 
