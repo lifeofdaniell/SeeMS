@@ -55,6 +55,8 @@ export function extractPageScripts(html: string): PageScripts {
     const $el = $(el);
     const src = $el.attr("src");
     if (src) {
+      // Skip local dev server URLs that would always 404 in real environments
+      if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//.test(src)) return;
       bodyCdn.push({ src, integrity: $el.attr("integrity"), crossorigin: $el.attr("crossorigin") });
     } else {
       const content = $el.html()?.trim();
@@ -259,20 +261,60 @@ export function transformForNuxt(
   $("img").each((_, el) => {
     const $el = $(el);
     const src = $el.attr("src");
-
-    if (src) {
-      // Normalize the asset path
-      const normalizedSrc = normalizePublicAssetPath(src);
-      $el.attr("src", normalizedSrc);
-    }
-
-    // Remove srcset and sizes attributes
+    if (src) $el.attr("src", normalizePublicAssetPath(src));
     $el.removeAttr("srcset");
     $el.removeAttr("sizes");
+    // Lazy-loaded data-src (Lottie JSON, deferred images)
+    const dataSrc = $el.attr("data-src");
+    if (dataSrc) $el.attr("data-src", normalizePublicAssetPath(dataSrc));
   });
 
-  // Note: CSS background-image paths are NOT changed here
-  // They will be handled by the webflow-assets.ts Vite plugin
+  // 3. Fix video src, poster, and inline style background-image
+  $("video").each((_, el) => {
+    const $el = $(el);
+    const src = $el.attr("src");
+    if (src) $el.attr("src", normalizePublicAssetPath(src));
+    const poster = $el.attr("poster");
+    if (poster) $el.attr("poster", normalizePublicAssetPath(poster));
+    const style = $el.attr("style");
+    if (style) {
+      $el.attr("style", style.replace(
+        /url\((['"]?)((?:videos|images|documents|fonts)\/[^'")\s]+)\1\)/g,
+        (_m, q, p) => `url(${q}/assets/${p}${q})`
+      ));
+    }
+  });
+
+  // 4. Fix <source> src (inside <video> / <audio>)
+  $("source").each((_, el) => {
+    const $el = $(el);
+    const src = $el.attr("src");
+    if (src) $el.attr("src", normalizePublicAssetPath(src));
+  });
+
+  // 5. Fix Webflow background-video data attributes
+  $("[data-poster-url]").each((_, el) => {
+    const $el = $(el);
+    const val = $el.attr("data-poster-url");
+    if (val) $el.attr("data-poster-url", normalizePublicAssetPath(val));
+  });
+
+  $("[data-video-urls]").each((_, el) => {
+    const $el = $(el);
+    const val = $el.attr("data-video-urls");
+    if (val) {
+      const normalized = val.split(",").map(u => normalizePublicAssetPath(u.trim())).join(",");
+      $el.attr("data-video-urls", normalized);
+    }
+  });
+
+  // 6. Fix Lottie / general data-src on non-img elements (e.g. lottie-player, div)
+  $("[data-src]").each((_, el) => {
+    if ($(el).is("img")) return; // already handled above
+    const $el = $(el);
+    const val = $el.attr("data-src");
+    if (val) $el.attr("data-src", normalizePublicAssetPath(val));
+  });
 
   return $.html();
 }

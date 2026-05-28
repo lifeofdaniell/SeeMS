@@ -89,6 +89,8 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
         console.log(pc.green(`  ✓ Found ${assets.images.length} images`));
         console.log(pc.green(`  ✓ Found ${assets.fonts.length} fonts`));
         console.log(pc.green(`  ✓ Found ${assets.js.length} JS files`));
+        if (assets.videos?.length) console.log(pc.green(`  ✓ Found ${assets.videos.length} video files`));
+        if (assets.documents?.length) console.log(pc.green(`  ✓ Found ${assets.documents.length} document files`));
 
         // Step 2: Copy assets to output
         console.log(pc.blue('\n📦 Copying assets...'));
@@ -238,12 +240,24 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
                     .map(([content]) => content)
             );
 
-            // Use scripts from the first page for CDN tags (identical across all Webflow pages)
+            // Use scripts and CSS order from the first page (identical across all Webflow pages)
             const firstPageName = htmlFiles[0] ? htmlPathToPageId(htmlFiles[0]) : null;
             const firstScripts = firstPageName ? pageScriptsMap.get(firstPageName) : null;
+            const firstParsed = firstPageName ? astroPageDataMap.get(firstPageName)?.parsed : null;
+
+            // Preserve CSS link order from original HTML; main.css is always added last by generateBaseLayout
+            const cssOrderFromHtml = (firstParsed?.cssFiles ?? []).map(f => path.basename(f));
+            const cssFilesOrdered = [...assets.css].sort((a, b) => {
+                const ai = cssOrderFromHtml.indexOf(path.basename(a));
+                const bi = cssOrderFromHtml.indexOf(path.basename(b));
+                if (ai === -1 && bi === -1) return 0;
+                if (ai === -1) return 1;
+                if (bi === -1) return -1;
+                return ai - bi;
+            });
 
             await generateBaseLayout(outputDir, {
-                cssFiles: assets.css,
+                cssFiles: cssFilesOrdered,
                 headCdnScripts: firstScripts?.headCdn ?? [],
                 headInlineScripts: firstScripts?.headInline ?? [],
                 bodyCdnScripts: firstScripts?.bodyCdn ?? [],

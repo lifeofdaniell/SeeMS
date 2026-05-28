@@ -12,10 +12,12 @@ import type { ProjectTarget } from './boilerplate';
 import type { ScriptTag } from './parser';
 
 export interface AssetPaths {
-  css: string[];      // Goes to assets/css/
-  images: string[];   // Goes to public/assets/images/
-  fonts: string[];    // Goes to public/assets/fonts/
-  js: string[];       // Goes to public/assets/js/
+  css: string[];       // Goes to assets/css/ (nuxt) or public/assets/css/ (astro-vue)
+  images: string[];    // Goes to public/assets/images/
+  fonts: string[];     // Goes to public/assets/fonts/
+  js: string[];        // Goes to public/assets/js/
+  videos: string[];    // Goes to public/assets/videos/
+  documents: string[]; // Goes to public/assets/documents/
 }
 
 /**
@@ -27,23 +29,17 @@ export async function scanAssets(webflowDir: string): Promise<AssetPaths> {
     images: [],
     fonts: [],
     js: [],
+    videos: [],
+    documents: [],
   };
 
-  // Find CSS files
-  const cssFiles = await glob('css/**/*.css', { cwd: webflowDir });
-  assets.css = cssFiles;
-
-  // Find images
+  assets.css = await glob('css/**/*.css', { cwd: webflowDir });
   const imageFiles = await glob('images/**/*', { cwd: webflowDir, nodir: true });
   assets.images = imageFiles.filter(file => !isResponsiveImageVariant(file));
-
-  // Find fonts
-  const fontFiles = await glob('fonts/**/*', { cwd: webflowDir, nodir: true });
-  assets.fonts = fontFiles;
-
-  // Find JS files
-  const jsFiles = await glob('js/**/*.js', { cwd: webflowDir });
-  assets.js = jsFiles;
+  assets.fonts = await glob('fonts/**/*', { cwd: webflowDir, nodir: true });
+  assets.js = await glob('js/**/*.js', { cwd: webflowDir });
+  assets.videos = await glob('videos/**/*', { cwd: webflowDir, nodir: true });
+  assets.documents = await glob('documents/**/*', { cwd: webflowDir, nodir: true });
 
   return assets;
 }
@@ -131,6 +127,24 @@ export async function copyJSFiles(
   }
 }
 
+async function copyGenericPublicAssets(
+  webflowDir: string,
+  outputDir: string,
+  files: string[],
+  subfolder: string
+): Promise<void> {
+  if (files.length === 0) return;
+  const targetDir = path.join(outputDir, 'public', 'assets', subfolder);
+  await fs.ensureDir(targetDir);
+  for (const file of files) {
+    const source = path.join(webflowDir, file);
+    const relative = path.relative(subfolder, file);
+    const target = path.join(targetDir, relative);
+    await fs.ensureDir(path.dirname(target));
+    await fs.copy(source, target);
+  }
+}
+
 /**
  * Copy all assets to their proper locations
  */
@@ -144,6 +158,8 @@ export async function copyAllAssets(
   await copyImages(webflowDir, outputDir, assets.images);
   await copyFonts(webflowDir, outputDir, assets.fonts);
   await copyJSFiles(webflowDir, outputDir, assets.js);
+  await copyGenericPublicAssets(webflowDir, outputDir, assets.videos ?? [], 'videos');
+  await copyGenericPublicAssets(webflowDir, outputDir, assets.documents ?? [], 'documents');
 }
 
 /**
@@ -297,6 +313,7 @@ ${headInlineTags}
   <slot />
 ${bodyCdnTags}
 ${sharedInlineTags}
+  <slot name="page-scripts" />
 </body>
 </html>
 `;
@@ -334,8 +351,8 @@ export async function writeAstroPage(
   const safeWfSite = wfSite.replace(/"/g, '&quot;');
   const safeBodyClass = bodyClass.replace(/"/g, '&quot;');
 
-  const pageScriptTags = uniqueBodyInlineScripts.length > 0
-    ? '\n' + uniqueBodyInlineScripts.map(s => `  <script is:inline>${s}</script>`).join('\n')
+  const pageScriptsSlot = uniqueBodyInlineScripts.length > 0
+    ? `\n  <Fragment slot="page-scripts">\n${uniqueBodyInlineScripts.map(s => `    <script is:inline>${s}</script>`).join('\n')}\n  </Fragment>`
     : '';
 
   await fs.ensureDir(path.dirname(astroPath));
@@ -344,7 +361,7 @@ export async function writeAstroPage(
 import BaseLayout from '${relativeLayoutImport}';
 ---
 <BaseLayout title="${safeTitle}" wfPage="${safeWfPage}" wfSite="${safeWfSite}" bodyClass="${safeBodyClass}">
-${htmlBody}${pageScriptTags}
+${htmlBody}${pageScriptsSlot}
 </BaseLayout>
 `, 'utf-8');
 }
