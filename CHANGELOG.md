@@ -2,6 +2,95 @@
 
 All notable changes to the see-ms monorepo will be documented in this file.
 
+## [Unreleased] — feat/astro-native-pages
+
+### @see-ms/converter — Astro target rewrite
+
+#### Changed
+
+- **`astro-vue` target now generates pure Astro SSR pages** instead of
+  `<Page client:only="vue" />` wrappers. Each Webflow page becomes a single
+  `.astro` file with the full HTML body rendered server-side. Scripts run
+  against a fully-rendered DOM — no timing hacks required.
+
+- **Script deduplication**: inline scripts shared across 2+ pages go into
+  `BaseLayout.astro`; scripts unique to one page embed inline at the end of
+  that page's file inside a `<Fragment slot="page-scripts">` block.
+
+- **Script execution order**: per-page scripts now render via a named
+  `<slot name="page-scripts" />` placed *after* CDN libraries and shared
+  inline scripts in `BaseLayout`. This guarantees that globals set up by
+  shared scripts (e.g. `window.clp`, `window.lenis`) are already defined
+  when page-specific `DOMContentLoaded` handlers fire.
+
+- **CSS link order** preserved from original Webflow HTML (`normalize →
+  components → site CSS → main.css`) instead of glob alphabetical order.
+  `main.css` (embedded styles) is always last so project-level overrides win.
+
+- **CSS destination** for `astro-vue` target corrected to
+  `public/assets/css/` (was `assets/css/`, unreachable by Astro's static
+  server).
+
+#### Added
+
+- **Video and document asset support**: `videos/**/*` and `documents/**/*`
+  are now scanned from the Webflow export and copied to
+  `public/assets/videos/` and `public/assets/documents/`.
+
+- **Media path normalization** in `transformForNuxt`:
+  - `<video src>`, `<video poster>`, `<source src>`
+  - `data-poster-url`, `data-video-urls` (Webflow background-video attributes)
+  - `data-src` on any element (Lottie JSON files, deferred images)
+  - Inline `style` background-image URLs referencing video/image/document paths
+
+- **`extractPageScripts`** utility (`parser.ts`) — pulls head/body CDN and
+  inline scripts from raw Webflow HTML before `parseHTML` strips them. Used
+  by the two-pass converter flow to deduplicate and route scripts to the right
+  place.
+
+- **`wfPage`, `wfSite`, `bodyClass`** extracted from the source HTML and
+  forwarded as props to `BaseLayout` so Webflow JS interactions that depend on
+  `data-wf-page` / `data-wf-site` continue to work.
+
+- **`generateBaseLayout`** (`filesystem.ts`) — generates
+  `src/layouts/BaseLayout.astro` with CSS links, head CDN scripts, head inline
+  scripts, body CDN scripts, shared body inline scripts, and the
+  `page-scripts` slot.
+
+- **`writeAstroPage`** (`filesystem.ts`) — writes a single `.astro` page with
+  HTML body inline and per-page scripts in the `page-scripts` slot.
+
+- **`analyzeVuePages`** updated (`detector.ts`) to also parse `.astro` files
+  (strips frontmatter, passes body HTML to field detector). CMS manifest
+  generation now works correctly against the new output structure.
+
+#### Fixed
+
+- Local dev-server script URLs (`http://localhost:*`, `http://127.0.0.1:*`)
+  are filtered out of extracted CDN scripts and never written to output.
+
+- `vue-transformer` post-processing, `formatVueFiles`, and
+  `extractSharedComponents` are all skipped for the `astro-vue` target in
+  this architecture — they operated on `.vue` page components that no longer
+  exist in this output structure.
+
+#### Why the rewrite was needed
+
+The previous `astro-vue` approach (on `main`) rendered each page as
+`<Page client:only="vue" />`. Astro sends an **empty `<body>`** to the browser
+for `client:only` components — the HTML is injected by JavaScript after the
+Vue bundle hydrates. Webflow sites assume fully-rendered DOM on load: GSAP
+animations, Lenis smooth scroll, Swiper, nav dropdowns, and Webflow's own
+`webflow.js` all query DOM elements immediately and fail silently against an
+empty body.
+
+Pure Astro SSR renders the complete HTML on the server. `DOMContentLoaded`
+fires after the browser has parsed the full document, by which point all CDN
+libraries have been loaded synchronously — so every Webflow script works
+exactly as it did in the original export.
+
+---
+
 ## [1.0.0] - 2026-01-11
 
 ### Major Release - Production Ready

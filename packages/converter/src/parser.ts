@@ -15,6 +15,56 @@ export interface ParsedPage {
   embeddedStyles: string;
   images: string[];
   links: string[];
+  wfPage?: string;
+  wfSite?: string;
+  bodyClass?: string;
+}
+
+export interface ScriptTag {
+  src: string;
+  integrity?: string;
+  crossorigin?: string;
+}
+
+export interface PageScripts {
+  headCdn: ScriptTag[];
+  headInline: string[];
+  bodyCdn: ScriptTag[];
+  bodyInline: string[];
+}
+
+export function extractPageScripts(html: string): PageScripts {
+  const $ = cheerio.load(html);
+  const headCdn: ScriptTag[] = [];
+  const headInline: string[] = [];
+  const bodyCdn: ScriptTag[] = [];
+  const bodyInline: string[] = [];
+
+  $("head script").each((_, el) => {
+    const $el = $(el);
+    const src = $el.attr("src");
+    if (src) {
+      headCdn.push({ src, integrity: $el.attr("integrity"), crossorigin: $el.attr("crossorigin") });
+    } else {
+      const content = $el.html()?.trim();
+      if (content) headInline.push(content);
+    }
+  });
+
+  $("body script").each((_, el) => {
+    const $el = $(el);
+    const src = $el.attr("src");
+    if (src) {
+      // Skip local dev server URLs that would always 404 in real environments
+      if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//.test(src)) return;
+      bodyCdn.push({ src, integrity: $el.attr("integrity"), crossorigin: $el.attr("crossorigin") });
+    } else {
+      const content = $el.html()?.trim();
+      if (content) bodyInline.push(content);
+    }
+  });
+
+  return { headCdn, headInline, bodyCdn, bodyInline };
 }
 
 /**
@@ -76,6 +126,11 @@ export function parseHTML(html: string, fileName: string): ParsedPage {
 
   // Extract page title
   const title = $("title").text() || fileName.replace(".html", "");
+
+  // Extract Webflow page/site identifiers and body class for Astro wrappers
+  const wfPage = $("html").attr("data-wf-page");
+  const wfSite = $("html").attr("data-wf-site");
+  const bodyClass = $("body").attr("class") || "";
 
   // Find all CSS files
   const cssFiles: string[] = [];
@@ -139,7 +194,10 @@ export function parseHTML(html: string, fileName: string): ParsedPage {
     cssFiles,
     embeddedStyles,
     images,
-    links
+    links,
+    wfPage,
+    wfSite,
+    bodyClass,
   };
 }
 
@@ -203,20 +261,60 @@ export function transformForNuxt(
   $("img").each((_, el) => {
     const $el = $(el);
     const src = $el.attr("src");
-
-    if (src) {
-      // Normalize the asset path
-      const normalizedSrc = normalizePublicAssetPath(src);
-      $el.attr("src", normalizedSrc);
-    }
-
-    // Remove srcset and sizes attributes
+    if (src) $el.attr("src", normalizePublicAssetPath(src));
     $el.removeAttr("srcset");
     $el.removeAttr("sizes");
+    // Lazy-loaded data-src (Lottie JSON, deferred images)
+    const dataSrc = $el.attr("data-src");
+    if (dataSrc) $el.attr("data-src", normalizePublicAssetPath(dataSrc));
   });
 
-  // Note: CSS background-image paths are NOT changed here
-  // They will be handled by the webflow-assets.ts Vite plugin
+  // 3. Fix video src, poster, and inline style background-image
+  $("video").each((_, el) => {
+    const $el = $(el);
+    const src = $el.attr("src");
+    if (src) $el.attr("src", normalizePublicAssetPath(src));
+    const poster = $el.attr("poster");
+    if (poster) $el.attr("poster", normalizePublicAssetPath(poster));
+    const style = $el.attr("style");
+    if (style) {
+      $el.attr("style", style.replace(
+        /url\((['"]?)((?:videos|images|documents|fonts)\/[^'")\s]+)\1\)/g,
+        (_m, q, p) => `url(${q}/assets/${p}${q})`
+      ));
+    }
+  });
+
+  // 4. Fix <source> src (inside <video> / <audio>)
+  $("source").each((_, el) => {
+    const $el = $(el);
+    const src = $el.attr("src");
+    if (src) $el.attr("src", normalizePublicAssetPath(src));
+  });
+
+  // 5. Fix Webflow background-video data attributes
+  $("[data-poster-url]").each((_, el) => {
+    const $el = $(el);
+    const val = $el.attr("data-poster-url");
+    if (val) $el.attr("data-poster-url", normalizePublicAssetPath(val));
+  });
+
+  $("[data-video-urls]").each((_, el) => {
+    const $el = $(el);
+    const val = $el.attr("data-video-urls");
+    if (val) {
+      const normalized = val.split(",").map(u => normalizePublicAssetPath(u.trim())).join(",");
+      $el.attr("data-video-urls", normalized);
+    }
+  });
+
+  // 6. Fix Lottie / general data-src on non-img elements (e.g. lottie-player, div)
+  $("[data-src]").each((_, el) => {
+    if ($(el).is("img")) return; // already handled above
+    const $el = $(el);
+    const val = $el.attr("data-src");
+    if (val) $el.attr("data-src", normalizePublicAssetPath(val));
+  });
 
   return $.html();
 }

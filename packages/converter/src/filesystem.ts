@@ -9,12 +9,15 @@ import { execSync } from 'child_process';
 import pc from 'picocolors';
 import { isResponsiveImageVariant } from './assets';
 import type { ProjectTarget } from './boilerplate';
+import type { ScriptTag } from './parser';
 
 export interface AssetPaths {
-  css: string[];      // Goes to assets/css/
-  images: string[];   // Goes to public/assets/images/
-  fonts: string[];    // Goes to public/assets/fonts/
-  js: string[];       // Goes to public/assets/js/
+  css: string[];       // Goes to assets/css/ (nuxt) or public/assets/css/ (astro-vue)
+  images: string[];    // Goes to public/assets/images/
+  fonts: string[];     // Goes to public/assets/fonts/
+  js: string[];        // Goes to public/assets/js/
+  videos: string[];    // Goes to public/assets/videos/
+  documents: string[]; // Goes to public/assets/documents/
 }
 
 /**
@@ -26,36 +29,33 @@ export async function scanAssets(webflowDir: string): Promise<AssetPaths> {
     images: [],
     fonts: [],
     js: [],
+    videos: [],
+    documents: [],
   };
 
-  // Find CSS files
-  const cssFiles = await glob('css/**/*.css', { cwd: webflowDir });
-  assets.css = cssFiles;
-
-  // Find images
+  assets.css = await glob('css/**/*.css', { cwd: webflowDir });
   const imageFiles = await glob('images/**/*', { cwd: webflowDir, nodir: true });
   assets.images = imageFiles.filter(file => !isResponsiveImageVariant(file));
-
-  // Find fonts
-  const fontFiles = await glob('fonts/**/*', { cwd: webflowDir, nodir: true });
-  assets.fonts = fontFiles;
-
-  // Find JS files
-  const jsFiles = await glob('js/**/*.js', { cwd: webflowDir });
-  assets.js = jsFiles;
+  assets.fonts = await glob('fonts/**/*', { cwd: webflowDir, nodir: true });
+  assets.js = await glob('js/**/*.js', { cwd: webflowDir });
+  assets.videos = await glob('videos/**/*', { cwd: webflowDir, nodir: true });
+  assets.documents = await glob('documents/**/*', { cwd: webflowDir, nodir: true });
 
   return assets;
 }
 
 /**
- * Copy CSS files to assets/css/
+ * Copy CSS files — Nuxt: assets/css/  Astro: public/assets/css/
  */
 export async function copyCSSFiles(
   webflowDir: string,
   outputDir: string,
-  cssFiles: string[]
+  cssFiles: string[],
+  target: ProjectTarget = 'nuxt'
 ): Promise<void> {
-  const targetDir = path.join(outputDir, 'assets', 'css');
+  const targetDir = target === 'astro-vue'
+    ? path.join(outputDir, 'public', 'assets', 'css')
+    : path.join(outputDir, 'assets', 'css');
   await fs.ensureDir(targetDir);
 
   for (const file of cssFiles) {
@@ -127,18 +127,39 @@ export async function copyJSFiles(
   }
 }
 
+async function copyGenericPublicAssets(
+  webflowDir: string,
+  outputDir: string,
+  files: string[],
+  subfolder: string
+): Promise<void> {
+  if (files.length === 0) return;
+  const targetDir = path.join(outputDir, 'public', 'assets', subfolder);
+  await fs.ensureDir(targetDir);
+  for (const file of files) {
+    const source = path.join(webflowDir, file);
+    const relative = path.relative(subfolder, file);
+    const target = path.join(targetDir, relative);
+    await fs.ensureDir(path.dirname(target));
+    await fs.copy(source, target);
+  }
+}
+
 /**
  * Copy all assets to their proper locations
  */
 export async function copyAllAssets(
   webflowDir: string,
   outputDir: string,
-  assets: AssetPaths
+  assets: AssetPaths,
+  target: ProjectTarget = 'nuxt'
 ): Promise<void> {
-  await copyCSSFiles(webflowDir, outputDir, assets.css);
+  await copyCSSFiles(webflowDir, outputDir, assets.css, target);
   await copyImages(webflowDir, outputDir, assets.images);
   await copyFonts(webflowDir, outputDir, assets.fonts);
   await copyJSFiles(webflowDir, outputDir, assets.js);
+  await copyGenericPublicAssets(webflowDir, outputDir, assets.videos ?? [], 'videos');
+  await copyGenericPublicAssets(webflowDir, outputDir, assets.documents ?? [], 'documents');
 }
 
 /**
@@ -212,6 +233,138 @@ ${editorScript}
 function ensureRelativeImport(importPath: string): string {
   const normalized = importPath.split(path.sep).join('/');
   return normalized.startsWith('.') ? normalized : `./${normalized}`;
+}
+
+export interface BaseLayoutOptions {
+  cssFiles: string[];
+  headCdnScripts: ScriptTag[];
+  headInlineScripts: string[];
+  bodyCdnScripts: ScriptTag[];
+  sharedBodyInlineScripts: string[];
+}
+
+/**
+ * Generate src/layouts/BaseLayout.astro — the single HTML shell for all pages.
+ */
+export async function generateBaseLayout(
+  outputDir: string,
+  options: BaseLayoutOptions
+): Promise<void> {
+  const { cssFiles, headCdnScripts, headInlineScripts, bodyCdnScripts, sharedBodyInlineScripts } = options;
+
+  const layoutsDir = path.join(outputDir, 'src', 'layouts');
+  await fs.ensureDir(layoutsDir);
+
+  const cssLinks = cssFiles
+    .map(f => `  <link rel="stylesheet" href="/assets/css/${path.basename(f)}" />`)
+    .join('\n');
+  const mainCssLink = `  <link rel="stylesheet" href="/assets/css/main.css" />`;
+
+  const headCdnTags = headCdnScripts
+    .map(s => {
+      const integrity = s.integrity ? ` integrity="${s.integrity}"` : '';
+      const crossorigin = s.crossorigin ? ` crossorigin="${s.crossorigin}"` : '';
+      return `  <script src="${s.src}"${integrity}${crossorigin} is:inline></script>`;
+    })
+    .join('\n');
+
+  const headInlineTags = headInlineScripts
+    .map(s => `  <script is:inline>${s}</script>`)
+    .join('\n');
+
+  const bodyCdnTags = bodyCdnScripts
+    .map(s => {
+      let src = s.src;
+      if (!src.startsWith('http') && !src.startsWith('//')) {
+        const basename = src.replace(/^\.?\//, '').replace(/^js\//, '');
+        src = `/assets/js/${basename}`;
+      }
+      const integrity = s.integrity ? ` integrity="${s.integrity}"` : '';
+      const crossorigin = s.crossorigin ? ` crossorigin="${s.crossorigin}"` : '';
+      return `  <script src="${src}"${integrity}${crossorigin} is:inline></script>`;
+    })
+    .join('\n');
+
+  const sharedInlineTags = sharedBodyInlineScripts
+    .map(s => `  <script is:inline>${s}</script>`)
+    .join('\n');
+
+  const content = `---
+// see-ms:generated
+interface Props {
+  title: string;
+  wfPage?: string;
+  wfSite?: string;
+  bodyClass?: string;
+}
+const { title, wfPage, wfSite, bodyClass = '' } = Astro.props;
+---
+<!DOCTYPE html>
+<html lang="en" data-wf-page={wfPage} data-wf-site={wfSite}>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{title}</title>
+${cssLinks}
+${mainCssLink}
+${headCdnTags}
+${headInlineTags}
+</head>
+<body class={bodyClass}>
+  <slot />
+${bodyCdnTags}
+${sharedInlineTags}
+  <slot name="page-scripts" />
+</body>
+</html>
+`;
+
+  await fs.writeFile(path.join(layoutsDir, 'BaseLayout.astro'), content, 'utf-8');
+}
+
+/**
+ * Write a pure Astro page with HTML body inline.
+ * No Vue component wrapper — DOM is server-rendered so scripts work natively.
+ */
+export async function writeAstroPage(
+  outputDir: string,
+  fileName: string,
+  htmlBody: string,
+  pageOptions: {
+    title?: string;
+    wfPage?: string;
+    wfSite?: string;
+    bodyClass?: string;
+    uniqueBodyInlineScripts?: string[];
+  } = {}
+): Promise<void> {
+  const astroPagesDir = path.join(outputDir, 'src', 'pages');
+  const astroName = fileName.replace('.html', '.astro');
+  const astroPath = path.join(astroPagesDir, astroName);
+  const layoutPath = path.join(outputDir, 'src', 'layouts', 'BaseLayout.astro');
+  const relativeLayoutImport = ensureRelativeImport(
+    path.relative(path.dirname(astroPath), layoutPath)
+  );
+
+  const { title = '', wfPage = '', wfSite = '', bodyClass = '', uniqueBodyInlineScripts = [] } = pageOptions;
+  const safeTitle = title.replace(/"/g, '&quot;');
+  const safeWfPage = wfPage.replace(/"/g, '&quot;');
+  const safeWfSite = wfSite.replace(/"/g, '&quot;');
+  const safeBodyClass = bodyClass.replace(/"/g, '&quot;');
+
+  const pageScriptsSlot = uniqueBodyInlineScripts.length > 0
+    ? `\n  <Fragment slot="page-scripts">\n${uniqueBodyInlineScripts.map(s => `    <script is:inline>${s}</script>`).join('\n')}\n  </Fragment>`
+    : '';
+
+  await fs.ensureDir(path.dirname(astroPath));
+  await fs.writeFile(astroPath, `---
+// see-ms:generated
+import BaseLayout from '${relativeLayoutImport}';
+---
+<BaseLayout title="${safeTitle}" wfPage="${safeWfPage}" wfSite="${safeWfSite}" bodyClass="${safeBodyClass}">
+${htmlBody}${pageScriptsSlot}
+</BaseLayout>
+`, 'utf-8');
 }
 
 /**

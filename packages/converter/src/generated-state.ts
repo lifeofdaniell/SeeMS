@@ -163,10 +163,9 @@ export function getGeneratedAssetFiles(assets: AssetPaths): string[] {
 
 export function getGeneratedPageFiles(htmlFiles: string[], target: ProjectTarget): string[] {
   if (target === "astro-vue") {
-    return htmlFiles.flatMap((file) => [
-      toPosixPath(path.join("src", "components", "pages", file.replace(/\.html$/i, ".vue"))),
-      toPosixPath(path.join("src", "pages", file.replace(/\.html$/i, ".astro"))),
-    ]);
+    return htmlFiles.map((file) =>
+      toPosixPath(path.join("src", "pages", file.replace(/\.html$/i, ".astro")))
+    );
   }
 
   return htmlFiles.map((file) => toPosixPath(path.join("pages", file.replace(/\.html$/i, ".vue"))));
@@ -188,6 +187,7 @@ export function getGeneratedRuntimeFiles(target: ProjectTarget, editorEnabled: b
   if (target === "astro-vue") {
     return [
       ...common,
+      "src/layouts/BaseLayout.astro",
       "src/composables/useStrapiContent.ts",
       ...(editorEnabled
         ? [

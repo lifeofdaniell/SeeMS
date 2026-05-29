@@ -24,6 +24,7 @@ export async function writeSeedData(
  */
 export async function createSeedReadme(outputDir: string): Promise<void> {
     const readmePath = path.join(path.dirname(seedDataPath(outputDir)), 'README.md');
+    await fs.ensureDir(path.dirname(readmePath));
 
     const content = `# CMS Seed Data
 
