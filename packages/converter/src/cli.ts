@@ -125,9 +125,11 @@ function toProjectTarget(value: string | undefined): ProjectTarget {
 /**
  * Prompt for collection classes and their names
  */
-async function promptForCollections(): Promise<CollectionConfig[]> {
-  const hasCollections = await confirm(pc.cyan("Configure collection types (blog posts, team members, FAQs, etc.)?"), true);
-  if (!hasCollections) return [];
+async function promptForCollections(skipConfirm = false): Promise<CollectionConfig[]> {
+  if (!skipConfirm) {
+    const hasCollections = await confirm(pc.cyan("Configure collection types (blog posts, team members, FAQs, etc.)?"), true);
+    if (!hasCollections) return [];
+  }
 
   console.log("");
   console.log(pc.dim("   Enter the CSS class names of repeating items that should become Strapi collections."));
@@ -777,7 +779,7 @@ extract
           console.log(pc.dim(`Current: ${state.collections.map(c => c.className).join(", ")}`));
           console.log("");
         }
-        collections = await promptForCollections();
+        collections = await promptForCollections(true); // skip confirm — user is already in this command
       }
 
       if (collections.length === 0) {
