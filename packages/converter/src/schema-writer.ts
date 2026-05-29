@@ -51,7 +51,7 @@ export async function writeLinkComponentSchema(outputDir: string): Promise<void>
  * Create a README for the CMS schemas
  */
 export async function createStrapiReadme(outputDir: string): Promise<void> {
-  const readmePath = path.join(outputDir, 'cms-schemas', 'README.md');
+  const readmePath = path.join(getschemasDir(outputDir), 'README.md');
   
   const content = `# CMS Schemas
 

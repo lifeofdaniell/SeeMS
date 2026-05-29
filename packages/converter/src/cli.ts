@@ -124,13 +124,15 @@ function toProjectTarget(value: string | undefined): ProjectTarget {
  * Prompt for collection classes and their names
  */
 async function promptForCollections(): Promise<CollectionConfig[]> {
+  const hasCollections = await confirm(pc.cyan("Configure collection types (blog posts, team members, FAQs, etc.)?"), true);
+  if (!hasCollections) return [];
+
   console.log("");
-  console.log(pc.cyan("📋 Collection Types Configuration"));
-  console.log(pc.dim("   Collections are repeating items like blog posts, team members, FAQs, etc."));
+  console.log(pc.dim("   Enter the CSS class names of repeating items that should become Strapi collections."));
   console.log("");
 
   const classesInput = await prompt(
-    pc.white("Enter collection element classes (comma-separated, or press enter to skip):\n") +
+    pc.white("Collection element classes (comma-separated):\n") +
     pc.dim("   Example: c-blogpost, team-member_card, c-faq-item\n") +
     pc.cyan("   > ")
   );
@@ -330,9 +332,9 @@ program
             className,
             collectionName: classToCollectionName(className)
           }));
-        } else if (collections.length === 0) {
+        } else if (collections.length === 0 && options.extract !== false) {
           collections = await promptForCollections();
-        } else {
+        } else if (collections.length > 0) {
           console.log(pc.dim(`Using ${collections.length} collection hint(s) from config.`));
         }
 
@@ -709,7 +711,7 @@ program
           `  ✓ Generated ${Object.keys(schemas).length} Strapi content types`
         )
       );
-      console.log(pc.dim(`  ✓ Schemas written to: ${path.join(outputDir, "cms-schemas")}/`));
+      console.log(pc.dim(`  ✓ Schemas written to: ${path.join(outputDir, ".see-ms", "schemas")}/`));
 
       console.log(pc.green("\n✅ Schema generation completed successfully!"));
     } catch (error) {
