@@ -31,25 +31,14 @@ export interface ManifestOptions {
 }
 
 /**
- * Generate CMS manifest from analyzed pages
+ * Internal: attach shared component fields to an in-progress manifest.
+ * Mutates manifest in place.
  */
-export async function generateManifest(
-  pagesDir: string,
-  options: ManifestOptions = {}
-): Promise<CMSManifest> {
-  // Build detection options
-  const collectionItemSelectors = options.sharedComponents
-    ?.filter((component) => component.role === "collection-item")
-    .map((component) => component.selector) || [];
-
-  const detectionOptions: DetectionOptions = {
-    collectionClasses: options.collectionClasses,
-    ignoreSelectors: [
-      ...(options.ignoreSelectors || []),
-      ...collectionItemSelectors
-    ],
-    ignoreClasses: options.ignoreClasses,
-  };
+async function attachComponentFields(
+  manifest: CMSManifest,
+  options: ManifestOptions
+): Promise<void> {
+  if (!options.sharedComponents?.length || !options.componentsDir) return;
 
   const componentDetectionOptions: DetectionOptions = {
     collectionClasses: options.collectionClasses,
@@ -57,19 +46,96 @@ export async function generateManifest(
     ignoreClasses: options.ignoreClasses,
   };
 
-  // Analyze all Vue pages
-  const analyzed = await analyzeVuePages(pagesDir, detectionOptions);
+  const globalFields: NonNullable<CMSManifest["global"]>["fields"] = {};
+  const components = manifest.global?.components || {};
 
-  // Build the manifest
+  for (const component of options.sharedComponents) {
+    const componentPath = path.join(options.componentsDir, `${component.name}.vue`);
+    if (!(await fs.pathExists(componentPath))) continue;
+
+    const content = await fs.readFile(componentPath, "utf-8");
+    const templateMatch = content.match(/<template>([\s\S]*?)<\/template>/);
+    if (!templateMatch) continue;
+
+    const detection = detectEditableFields(templateMatch[1], componentDetectionOptions);
+    const prefixedFields = Object.fromEntries(
+      Object.entries(detection.fields).map(([fieldName, field]) => [
+        `${component.name}_${fieldName}`,
+        field
+      ])
+    );
+    const collectionFields = Object.fromEntries(
+      Object.entries(detection.fields).map(([fieldName, field]) => [
+        fieldName,
+        {
+          selector: field.selector,
+          type: field.type,
+          attribute: field.attribute
+        } satisfies CollectionFieldMapping
+      ])
+    );
+
+    const contentMode = component.contentMode || "shared-global";
+    const role = component.role || "shared-section";
+
+    components[component.name] = {
+      ...component,
+      role,
+      contentMode,
+      fields: role === "collection-item" ? detection.fields : prefixedFields
+    };
+
+    if (role === "collection-item") {
+      for (const pageId of component.pages || []) {
+        if (!manifest.pages[pageId]) continue;
+        const collectionName = resolveCollectionName(component.collectionName || toCollectionName(component.name), pageId);
+        manifest.pages[pageId].collections = {
+          ...manifest.pages[pageId].collections,
+          [collectionName]: {
+            selector: component.selector,
+            fields: collectionFields,
+            componentName: component.name,
+            storage: component.collectionStorage || "collection-type"
+          }
+        };
+      }
+    } else if (contentMode === "per-page") {
+      for (const pageId of component.pages || []) {
+        if (!manifest.pages[pageId]) continue;
+        manifest.pages[pageId].fields = {
+          ...manifest.pages[pageId].fields,
+          ...prefixedFields
+        };
+      }
+    } else if (contentMode === "shared-global" || contentMode === "auto") {
+      Object.assign(globalFields!, prefixedFields);
+    }
+  }
+
+  if (manifest.global) {
+    manifest.global.components = components;
+    if (Object.keys(globalFields || {}).length > 0) {
+      manifest.global.fields = globalFields;
+    }
+  }
+}
+
+/**
+ * Internal: build page manifest entries from a detection map, applying
+ * collection name remappings if configured.
+ */
+function buildPages(
+  analyzed: Record<string, { fields: Record<string, any>; collections: Record<string, any> }>,
+  options: ManifestOptions
+): Record<string, PageManifest> {
   const pages: Record<string, PageManifest> = {};
 
   for (const [pageName, detection] of Object.entries(analyzed)) {
-    // Apply collection name mappings if provided
     let collections = detection.collections;
+
     if (options.collectionNames && Object.keys(options.collectionNames).length > 0) {
       collections = {};
       for (const [collectionKey, collection] of Object.entries(detection.collections)) {
-        // Check if this collection should be renamed
         let newName = collectionKey;
         for (const [className, displayName] of Object.entries(options.collectionNames)) {
           const normalizedClassName = className.replace(/-/g, '_');
@@ -91,7 +157,14 @@ export async function generateManifest(
     };
   }
 
-  const manifest: CMSManifest = {
+  return pages;
+}
+
+/**
+ * Internal: assemble the skeleton CMSManifest from page map + options.
+ */
+function assembleManifest(pages: Record<string, PageManifest>, options: ManifestOptions): CMSManifest {
+  return {
     version: '1.0',
     pages,
     global: options.sharedComponents && options.sharedComponents.length > 0
@@ -102,87 +175,72 @@ export async function generateManifest(
         }
       : undefined,
     providers: {
-      [options.provider || 'strapi']: {
-        version: '1'
-      }
+      [options.provider || 'strapi']: { version: '1' }
     }
   };
+}
 
-  if (options.sharedComponents?.length && options.componentsDir) {
-    const globalFields: NonNullable<CMSManifest["global"]>["fields"] = {};
-    const components = manifest.global?.components || {};
+/**
+ * Generate CMS manifest from already-converted Vue pages directory.
+ * Used during the normal conversion flow — reads .vue files that still have
+ * their static HTML content (before reactive transformation).
+ */
+export async function generateManifest(
+  pagesDir: string,
+  options: ManifestOptions = {}
+): Promise<CMSManifest> {
+  const collectionItemSelectors = options.sharedComponents
+    ?.filter((component) => component.role === "collection-item")
+    .map((component) => component.selector) || [];
 
-    for (const component of options.sharedComponents) {
-      const componentPath = path.join(options.componentsDir, `${component.name}.vue`);
-      if (!(await fs.pathExists(componentPath))) continue;
+  const detectionOptions: DetectionOptions = {
+    collectionClasses: options.collectionClasses,
+    ignoreSelectors: [
+      ...(options.ignoreSelectors || []),
+      ...collectionItemSelectors
+    ],
+    ignoreClasses: options.ignoreClasses,
+  };
 
-      const content = await fs.readFile(componentPath, "utf-8");
-      const templateMatch = content.match(/<template>([\s\S]*?)<\/template>/);
-      if (!templateMatch) continue;
+  const analyzed = await analyzeVuePages(pagesDir, detectionOptions);
+  const pages = buildPages(analyzed, options);
+  const manifest = assembleManifest(pages, options);
+  await attachComponentFields(manifest, options);
+  return manifest;
+}
 
-      const detection = detectEditableFields(templateMatch[1], componentDetectionOptions);
-      const prefixedFields = Object.fromEntries(
-        Object.entries(detection.fields).map(([fieldName, field]) => [
-          `${component.name}_${fieldName}`,
-          field
-        ])
-      );
-      const collectionFields = Object.fromEntries(
-        Object.entries(detection.fields).map(([fieldName, field]) => [
-          fieldName,
-          {
-            selector: field.selector,
-            type: field.type,
-            attribute: field.attribute
-          } satisfies CollectionFieldMapping
-        ])
-      );
+/**
+ * Generate CMS manifest directly from raw HTML strings.
+ * Used by `cms extract collections` — runs detection on the original Webflow
+ * HTML so already-transformed Vue files (which contain {{ content.x }} syntax)
+ * don't confuse the field detector.
+ */
+export async function generateManifestFromHtmlMap(
+  htmlContentMap: Map<string, string>,
+  pageRoutes: Record<string, string>,
+  options: ManifestOptions = {}
+): Promise<CMSManifest> {
+  const collectionItemSelectors = options.sharedComponents
+    ?.filter((component) => component.role === "collection-item")
+    .map((component) => component.selector) || [];
 
-      const contentMode = component.contentMode || "shared-global";
-      const role = component.role || "shared-section";
+  const detectionOptions: DetectionOptions = {
+    collectionClasses: options.collectionClasses,
+    ignoreSelectors: [
+      ...(options.ignoreSelectors || []),
+      ...collectionItemSelectors
+    ],
+    ignoreClasses: options.ignoreClasses,
+  };
 
-      components[component.name] = {
-        ...component,
-        role,
-        contentMode,
-        fields: role === "collection-item" ? detection.fields : prefixedFields
-      };
-
-      if (role === "collection-item") {
-        for (const pageId of component.pages || []) {
-          if (!manifest.pages[pageId]) continue;
-          const collectionName = resolveCollectionName(component.collectionName || toCollectionName(component.name), pageId);
-          manifest.pages[pageId].collections = {
-            ...manifest.pages[pageId].collections,
-            [collectionName]: {
-              selector: component.selector,
-              fields: collectionFields,
-              componentName: component.name,
-              storage: component.collectionStorage || "collection-type"
-            }
-          };
-        }
-      } else if (contentMode === "per-page") {
-        for (const pageId of component.pages || []) {
-          if (!manifest.pages[pageId]) continue;
-          manifest.pages[pageId].fields = {
-            ...manifest.pages[pageId].fields,
-            ...prefixedFields
-          };
-        }
-      } else if (contentMode === "shared-global" || contentMode === "auto") {
-        Object.assign(globalFields!, prefixedFields);
-      }
-    }
-
-    if (manifest.global) {
-      manifest.global.components = components;
-      if (Object.keys(globalFields || {}).length > 0) {
-        manifest.global.fields = globalFields;
-      }
-    }
+  const analyzed: Record<string, { fields: Record<string, any>; collections: Record<string, any> }> = {};
+  for (const [pageName, html] of htmlContentMap.entries()) {
+    analyzed[pageName] = detectEditableFields(html, detectionOptions);
   }
 
+  const pages = buildPages(analyzed, { ...options, pageRoutes });
+  const manifest = assembleManifest(pages, options);
+  await attachComponentFields(manifest, options);
   return manifest;
 }
 

@@ -17,6 +17,8 @@ import { manifestToSchemas, getLinkComponentSchema } from "./transformer";
 import { writeAllSchemas, createStrapiReadme, writeLinkComponentSchema } from "./schema-writer";
 import { analyzeWebflowExport, renderReportMarkdown } from "./analyzer";
 import { loadSeeMSConfig, mergeConfig, normalizeConfig } from "./config";
+import { loadConversionState } from "./conversion-state";
+import { runExtractCollections, runExtractComponent } from "./extract";
 import type { CMSManifest, ConversionReport, SeeMSConfig } from "@see-ms/types";
 import type { ProjectTarget } from "./boilerplate";
 
@@ -719,6 +721,170 @@ program
       console.error(
         pc.red(error instanceof Error ? error.message : String(error))
       );
+      process.exit(1);
+    }
+  });
+
+// ---------------------------------------------------------------------------
+// extract namespace
+// ---------------------------------------------------------------------------
+
+const extract = program
+  .command("extract")
+  .description("Extract components or collections from an already-converted project");
+
+extract
+  .command("collections [project-dir]")
+  .description("Define collection types and regenerate the manifest, schemas, seed data, and page templates")
+  .option("--classes <classes>", "Comma-separated CSS class names to treat as collections")
+  .option("--config <path>", "Path to see-ms config file")
+  .option("--skip-prompts", "Use existing config/state without prompting")
+  .action(async (projectDir, options) => {
+    try {
+      if (!projectDir) {
+        projectDir = await prompt(pc.cyan("📁 Converted project directory: "));
+      }
+      if (!projectDir) throw new Error("Project directory is required");
+
+      const resolvedDir = path.resolve(projectDir);
+
+      const state = await loadConversionState(resolvedDir);
+      if (!state) {
+        throw new Error(`No conversion state in "${resolvedDir}". Run 'cms convert' first.`);
+      }
+
+      console.log("");
+      console.log(pc.cyan(pc.bold("📦 SeeMS — Extract Collections")));
+      console.log(pc.dim(`   Project: ${resolvedDir}`));
+      console.log(pc.dim(`   Source:  ${state.inputDir}`));
+      console.log("");
+
+      let collections: Array<{ className: string; collectionName: string }>;
+
+      if (options.classes) {
+        const classes = (options.classes as string).split(",").map((c: string) => c.trim()).filter(Boolean);
+        collections = classes.map((cls: string) => ({
+          className: cls,
+          collectionName: classToCollectionName(cls),
+        }));
+      } else if (options.skipPrompts) {
+        collections = state.collections.map(c => ({ className: c.className, collectionName: c.name }));
+        if (collections.length === 0) {
+          throw new Error("No collections in state. Pass --classes or remove --skip-prompts.");
+        }
+      } else {
+        if (state.collections.length > 0) {
+          console.log(pc.dim(`Current: ${state.collections.map(c => c.className).join(", ")}`));
+          console.log("");
+        }
+        collections = await promptForCollections();
+      }
+
+      if (collections.length === 0) {
+        console.log(pc.yellow("No collections defined. Skipping."));
+        return;
+      }
+
+      console.log("");
+      console.log(pc.green("✓ Collections:"));
+      for (const c of collections) {
+        console.log(pc.dim(`  • ${c.className} → ${c.collectionName}`));
+      }
+      console.log("");
+
+      await runExtractCollections(resolvedDir, { collections, configPath: options.config });
+
+      console.log(pc.green("\n✅ Done"));
+    } catch (error) {
+      console.error(pc.red("\n❌ Extract collections failed:"));
+      console.error(pc.red(error instanceof Error ? error.message : String(error)));
+      process.exit(1);
+    }
+  });
+
+extract
+  .command("components [project-dir]")
+  .description("Extract a single component from the original HTML by CSS selector")
+  .option("--name <name>", "Component name, e.g. tabs, hero-section")
+  .option("--selector <selector>", "CSS selector for the component's root element, e.g. .w-tabs")
+  .option("--role <role>", "shared-section (default) or collection-item")
+  .option("--collection-name <name>", "Collection name (for collection-item role)")
+  .option("--content-mode <mode>", "shared-global (default) | per-page | auto")
+  .option("--config <path>", "Path to see-ms config file")
+  .option("--skip-prompts", "Non-interactive: requires --name and --selector")
+  .action(async (projectDir, options) => {
+    try {
+      if (!projectDir) {
+        projectDir = await prompt(pc.cyan("📁 Converted project directory: "));
+      }
+      if (!projectDir) throw new Error("Project directory is required");
+
+      const resolvedDir = path.resolve(projectDir);
+
+      const state = await loadConversionState(resolvedDir);
+      if (!state) {
+        throw new Error(`No conversion state in "${resolvedDir}". Run 'cms convert' first.`);
+      }
+
+      console.log("");
+      console.log(pc.cyan(pc.bold("🧩 SeeMS — Extract Component")));
+      console.log(pc.dim(`   Project: ${resolvedDir}`));
+      console.log(pc.dim(`   Source:  ${state.inputDir}`));
+      console.log("");
+
+      let name: string = options.name || "";
+      let selector: string = options.selector || "";
+      let role: "shared-section" | "collection-item" = options.role === "collection-item"
+        ? "collection-item"
+        : "shared-section";
+      let collectionName: string | undefined = options.collectionName;
+      let contentMode: string | undefined = options.contentMode;
+
+      if (!options.skipPrompts) {
+        if (!name) {
+          name = await prompt(pc.cyan("Component name (e.g. tabs, hero-section): "));
+        }
+        if (!selector) {
+          selector = await prompt(pc.cyan("CSS selector for the root element (e.g. .w-tabs): "));
+        }
+        role = await select(pc.cyan("What kind of component?"), [
+          { label: "Shared section — one instance per page (nav, footer, hero)", value: "shared-section" },
+          { label: "Collection item — repeats within a page (cards, tabs)", value: "collection-item" },
+        ], role) as "shared-section" | "collection-item";
+
+        if (role === "collection-item" && !collectionName) {
+          const suggested = classToCollectionName(name);
+          const ans = await prompt(pc.cyan(`Collection name (${suggested}): `));
+          collectionName = ans || suggested;
+        }
+      }
+
+      if (!name) throw new Error("Component name is required (--name)");
+      if (!selector) throw new Error("CSS selector is required (--selector)");
+
+      console.log("");
+      console.log(pc.green("✓ Extracting:"));
+      console.log(pc.dim(`  • Name:     ${name}`));
+      console.log(pc.dim(`  • Selector: ${selector}`));
+      console.log(pc.dim(`  • Role:     ${role}`));
+      if (collectionName) console.log(pc.dim(`  • Collection: ${collectionName}`));
+      console.log("");
+      console.log(pc.yellow("  ⚠  Page files will be overwritten with versions that use the component tag."));
+      console.log("");
+
+      await runExtractComponent(resolvedDir, {
+        name,
+        selector,
+        role,
+        collectionName,
+        contentMode: contentMode as any,
+        configPath: options.config,
+      });
+
+      console.log(pc.green("\n✅ Done"));
+    } catch (error) {
+      console.error(pc.red("\n❌ Extract component failed:"));
+      console.error(pc.red(error instanceof Error ? error.message : String(error)));
       process.exit(1);
     }
   });
