@@ -78,7 +78,7 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
         // Step 0: Analyze input and setup boilerplate
         const analysis = await analyzeWebflowExport(inputDir, config);
         await setupBoilerplate(boilerplate, outputDir, target);
-        await writeSeeMSConfig(outputDir, config);
+        await writeSeeMSConfig(outputDir, options.config || {});
         const previousGeneratedState = await loadGeneratedFileState(outputDir);
         const generatedFiles = new Set<string>(getGeneratedRuntimeFiles(target, editorEnabled));
 
@@ -361,7 +361,7 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
 
         if (shouldGenerateContent) {
             console.log(pc.green(`  ✓ Extracted content from ${pagesWithContent} pages`));
-            console.log(pc.green(`  ✓ Generated cms-seed/seed-data.json`));
+            console.log(pc.green(`  ✓ Generated .see-ms/seed/seed-data.json`));
         } else {
             console.log(pc.dim('  Skipped initial CMS content generation'));
         }
@@ -384,7 +384,7 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
         }
 
         console.log(pc.green(`  ✓ Generated ${Object.keys(schemas).length} Strapi content types`));
-        console.log(pc.dim('    View schemas in: cms-schemas/'));
+        console.log(pc.dim('    View schemas in: .see-ms/schemas/'));
 
         if (provider === 'strapi') {
             await createStrapiBootstrap(outputDir);
@@ -450,7 +450,7 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
             warnings: []
         });
         await writeConversionReport(outputDir, report);
-        console.log(pc.green('  ✓ Generated see-ms-report.md and see-ms-report.json'));
+        console.log(pc.green('  ✓ Generated .see-ms/report.md and .see-ms/report.json'));
         const removedStaleFiles = await removeStaleGeneratedFiles(outputDir, previousGeneratedState, generatedFiles);
         if (removedStaleFiles.length > 0) {
             console.log(pc.green(`  ✓ Removed ${removedStaleFiles.length} stale generated files`));
@@ -471,10 +471,10 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
         console.log(pc.green('\n✅ Conversion completed successfully!'));
         console.log(pc.cyan('\n📋 Next steps:'));
         console.log(pc.dim(`  1. cd ${outputDir}`));
-        console.log(pc.dim('  2. Review cms-manifest.json and cms-seed/seed-data.json'));
-        console.log(pc.dim('  3. Set up Strapi and install schemas from cms-schemas/'));
+        console.log(pc.dim('  2. Review public/cms-manifest.json and .see-ms/seed/seed-data.json'));
+        console.log(pc.dim('  3. Set up Strapi and install schemas from .see-ms/schemas/'));
         console.log(pc.dim('     (setup-strapi installs the generated bootstrap automatically)'));
-        console.log(pc.dim('  4. Seed Strapi with data from cms-seed/'));
+        console.log(pc.dim('  4. Seed Strapi with data from .see-ms/seed/'));
         console.log(pc.dim('  5. pnpm install && pnpm dev'));
         console.log(pc.dim('  6. Visit http://localhost:3000?preview=true to edit inline!'));
 

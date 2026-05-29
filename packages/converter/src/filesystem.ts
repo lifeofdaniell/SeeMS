@@ -165,10 +165,11 @@ export async function copyAllAssets(
 /**
  * Find all HTML files in Webflow export (including subfolders)
  */
+const WEBFLOW_COMPONENT_FILE = /(?:^|\/)component-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.html$/i;
+
 export async function findHTMLFiles(webflowDir: string): Promise<string[]> {
-  // Find all HTML files recursively
   const htmlFiles = await glob('**/*.html', { cwd: webflowDir, nodir: true });
-  return htmlFiles;
+  return htmlFiles.filter(f => !WEBFLOW_COMPONENT_FILE.test(f));
 }
 
 /**

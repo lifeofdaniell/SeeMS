@@ -70,11 +70,31 @@ export async function loadSeeMSConfig(configPath?: string): Promise<SeeMSConfig>
   return Function(`"use strict"; return (${objectMatch[1]});`)() as SeeMSConfig;
 }
 
+function stripEmpty(val: unknown): unknown {
+  if (Array.isArray(val)) {
+    const arr = val.map(stripEmpty).filter(v => v !== undefined);
+    return arr.length > 0 ? arr : undefined;
+  }
+  if (val !== null && typeof val === "object") {
+    const obj: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(val as object)) {
+      const stripped = stripEmpty(v);
+      if (stripped !== undefined) obj[k] = stripped;
+    }
+    return Object.keys(obj).length > 0 ? obj : undefined;
+  }
+  return val;
+}
+
+export function minimalConfig(config: SeeMSConfig): SeeMSConfig {
+  return (stripEmpty(config) ?? {}) as SeeMSConfig;
+}
+
 export async function writeSeeMSConfig(outputDir: string, config: SeeMSConfig): Promise<void> {
   const target = path.join(outputDir, "see-ms.config.ts");
-  const content = `import type { SeeMSConfig } from "@see-ms/types";
-
-const config: SeeMSConfig = ${JSON.stringify(config, null, 2)};
+  const minimal = minimalConfig(config);
+  const content = `/** @type {import('@see-ms/types').SeeMSConfig} */
+const config = ${JSON.stringify(minimal, null, 2)};
 
 export default config;
 `;

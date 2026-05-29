@@ -126,6 +126,7 @@ export default defineConfig({
           vue: '^3.5.14'
         },
         devDependencies: {
+          '@see-ms/types': '^0.2.0',
           typescript: '^5.8.3'
         }
       } : {
