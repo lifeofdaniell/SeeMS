@@ -22,7 +22,7 @@ import { glob } from 'glob';
 import { loadConversionState, writeConversionState, hashSourceFiles } from './conversion-state';
 import { generateManifest, generateManifestFromHtmlMap, writeManifest, readManifest } from './manifest';
 import { manifestToSchemas, getLinkComponentSchema } from './transformer';
-import { writeAllSchemas, writeAllComponentSchemas, createStrapiReadme, writeLinkComponentSchema } from './schema-writer';
+import { writeAllSchemas, writeAllComponentSchemas, clearGeneratedSchemas, createStrapiReadme, writeLinkComponentSchema } from './schema-writer';
 import { extractAllContent, formatForStrapi } from './content-extractor';
 import { writeSeedData, createSeedReadme } from './seed-writer';
 import {
@@ -244,6 +244,10 @@ async function regenerateSchemasAndSeed(
   htmlContentMap: Map<string, string>,
   provider: string
 ): Promise<void> {
+  // Clear stale schemas before writing fresh ones so renamed / removed
+  // collections don't leave orphaned files that confuse Strapi.
+  await clearGeneratedSchemas(projectDir);
+
   const { contentTypes, componentSchemas } = manifestToSchemas(manifest);
   await writeAllSchemas(projectDir, contentTypes);
   await writeAllComponentSchemas(projectDir, componentSchemas);
@@ -251,7 +255,7 @@ async function regenerateSchemasAndSeed(
   const linkSchema = getLinkComponentSchema(manifest);
   if (linkSchema) await writeLinkComponentSchema(projectDir);
   if (provider === 'strapi') await createStrapiBootstrap(projectDir);
-  console.log(pc.green(`  ✓ ${Object.keys(schemas).length} Strapi content types`));
+  console.log(pc.green(`  ✓ ${Object.keys(contentTypes).length} Strapi content types`));
 
   const extracted = extractAllContent(htmlContentMap, manifest);
   const seedData = formatForStrapi(extracted);

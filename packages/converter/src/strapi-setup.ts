@@ -164,20 +164,24 @@ export async function completeSetup(options: SetupOptions): Promise<void> {
   console.log("✓ Bootstrap installed\n");
 
   // Step 3: Wait for user to start Strapi
-  console.log("⏸️  Step 3: Start Strapi to load schemas and bootstrap");
+  console.log("⏸️  Step 3: Start Strapi in a separate terminal tab");
   console.log(`   Detected package manager: ${pm}`);
+  console.log("");
+  console.log("   ┌─ Open a new terminal tab and run: ──────────────────────");
   if (nvmrc) {
-    console.log(`   Detected .nvmrc: Node ${nvmrc}`);
-    console.log(`   cd ${strapiDir}`);
-    console.log(`   nvm use`);
-    console.log(`   ${installCmd}   # if not already installed`);
-    console.log(`   ${runCmd}`);
+    console.log(`   │  cd ${strapiDir}`);
+    console.log(`   │  nvm use          # .nvmrc requires Node ${nvmrc}`);
+    console.log(`   │  ${installCmd}    # first time only`);
+    console.log(`   │  ${runCmd}`);
   } else {
-    console.log(`   cd ${strapiDir}`);
-    console.log(`   ${installCmd}   # if not already installed`);
-    console.log(`   ${runCmd}`);
+    console.log(`   │  cd ${strapiDir}`);
+    console.log(`   │  ${installCmd}    # first time only`);
+    console.log(`   │  ${runCmd}`);
   }
-  console.log("\n   Wait for \"Server started on port 1337\" then press Enter...");
+  console.log("   └─────────────────────────────────────────────────────────");
+  console.log("");
+  console.log("   Come back here and press Enter once Strapi is running.");
+  console.log("   (you don't need to wait for it to fully boot — just press Enter)");
 
   await waitForEnter();
 
@@ -187,9 +191,10 @@ export async function completeSetup(options: SetupOptions): Promise<void> {
 
   if (!isRunning) {
     console.error(`\n❌ Strapi did not respond at ${strapiUrl} within 90 seconds`);
-    console.log(`   Check for errors in the Strapi terminal`);
-    console.log(`   Then re-run: make setup-strapi`);
-    if (nvmrc) console.log(`   (remember: nvm use  — .nvmrc requires Node ${nvmrc})`);
+    console.log(`\n   Switch to the terminal tab where you ran "${runCmd}"`);
+    console.log(`   and look for any error messages there.`);
+    if (nvmrc) console.log(`\n   Common cause: wrong Node version. Make sure you ran: nvm use`);
+    console.log(`\n   Once Strapi is running, re-run: make setup-strapi`);
     process.exit(1);
   }
 
@@ -358,6 +363,13 @@ async function installSchemas(
     return;
   }
 
+  // Wipe the existing src/api directory so stale or renamed schemas don't linger
+  const strapiApiDir = path.join(strapiDir, "src", "api");
+  if (await fs.pathExists(strapiApiDir)) {
+    await fs.emptyDir(strapiApiDir);
+    console.log("   ✓ Cleared existing src/api (fresh install)");
+  }
+
   console.log(`   Found ${schemaFiles.length} schema file(s)`);
 
   for (const file of schemaFiles) {
@@ -427,6 +439,14 @@ async function installStrapiBootstrap(projectDir: string, strapiDir: string): Pr
   const srcDir = path.join(strapiDir, "src");
   const targetPath = path.join(srcDir, "index.ts");
   await fs.ensureDir(srcDir);
+
+  // Remove legacy src/index.js — TypeScript compiles with allowJs:true, so
+  // having both index.js and index.ts causes a "Debug Failure" TS assertion.
+  const legacyJsPath = path.join(srcDir, "index.js");
+  if (await fs.pathExists(legacyJsPath)) {
+    await fs.remove(legacyJsPath);
+    console.log("   ✓ Removed legacy src/index.js (replaced by src/index.ts)");
+  }
 
   if (!(await fs.pathExists(targetPath))) {
     await fs.copy(sourcePath, targetPath);

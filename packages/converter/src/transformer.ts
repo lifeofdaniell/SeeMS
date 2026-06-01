@@ -189,7 +189,7 @@ function collectionToStrapiSchema(
     // Nested children → Strapi repeatable component fields
     if (collection.children) {
         for (const [childFieldName, childDef] of Object.entries<any>(collection.children)) {
-            const kebabCollection = collectionName.replace(/_/g, '-');
+            const kebabCollection = collectionName.replace(/_/g, '-').replace(/--+/g, '-');
             const uid = childDef.componentUid || `default.${kebabCollection}-${childFieldName}`;
             // "default.faq-groups-items" → key "default/faq-groups-items" for file path
             const componentKey = uid.replace('.', '/');
@@ -215,7 +215,7 @@ function collectionToStrapiSchema(
         .map((word: string) => word.charAt(0).toUpperCase() + word.slice(1))
         .join(' ');
 
-    const kebabCaseName = collectionName.replace(/_/g, '-');
+    const kebabCaseName = collectionName.replace(/_/g, '-').replace(/--+/g, '-');
     const singularName = kebabCaseName.endsWith('s')
         ? kebabCaseName.slice(0, -1)
         : kebabCaseName;

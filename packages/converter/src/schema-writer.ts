@@ -24,6 +24,32 @@ export async function writeStrapiSchema(
 }
 
 /**
+ * Clear stale content-type schemas and generated component schemas before a
+ * fresh write.  Removes every *.json from the schemas root (content-types) and
+ * empties components/default/.  Leaves components/shared/ intact — it holds
+ * the hand-managed link component schema.
+ */
+export async function clearGeneratedSchemas(outputDir: string): Promise<void> {
+  const sd = getschemasDir(outputDir);
+  if (!(await fs.pathExists(sd))) return;
+
+  // Remove root-level *.json files (content-type schemas)
+  const entries = await fs.readdir(sd);
+  for (const entry of entries) {
+    if (entry.endsWith('.json')) {
+      await fs.remove(path.join(sd, entry));
+    }
+  }
+
+  // Clear components/default/ (auto-generated child components).
+  // Do NOT touch components/shared/ — that holds link.json which is kept.
+  const defaultComponentsDir = path.join(sd, 'components', 'default');
+  if (await fs.pathExists(defaultComponentsDir)) {
+    await fs.emptyDir(defaultComponentsDir);
+  }
+}
+
+/**
  * Write all content-type schemas
  */
 export async function writeAllSchemas(

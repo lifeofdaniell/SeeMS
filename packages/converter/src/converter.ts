@@ -37,7 +37,7 @@ import { setupBoilerplate } from './boilerplate';
 import { generateManifest, writeManifest } from './manifest';
 import { transformAllVuePages, transformSharedComponentsToReactive } from './vue-transformer';
 import { manifestToSchemas, getLinkComponentSchema } from './transformer';
-import { writeAllSchemas, writeAllComponentSchemas, createStrapiReadme, writeLinkComponentSchema } from './schema-writer';
+import { writeAllSchemas, writeAllComponentSchemas, clearGeneratedSchemas, createStrapiReadme, writeLinkComponentSchema } from './schema-writer';
 import { extractAllContent, formatForStrapi } from './content-extractor';
 import { writeSeedData, createSeedReadme } from './seed-writer';
 import { extractSharedComponents, replaceWithComponent } from './component-extractor';
@@ -368,6 +368,7 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
 
         // Step 10: Generate Strapi schemas
         console.log(pc.blue('\n📋 Generating Strapi schemas...'));
+        await clearGeneratedSchemas(outputDir);
         const { contentTypes, componentSchemas } = manifestToSchemas(manifest);
         Object.keys(contentTypes).forEach((name) => {
             generatedFiles.add(toPosixPath(path.join('.see-ms', 'schemas', `${name}.json`)));
