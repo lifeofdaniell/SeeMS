@@ -7,7 +7,7 @@ import * as cheerio from 'cheerio';
 import fs from 'fs-extra';
 import path from 'path';
 import { glob } from 'glob';
-import type { FieldMapping, CollectionMapping, DataCMSAttributes, FieldType } from '@see-ms/types';
+import type { FieldMapping, CollectionMapping, CollectionFieldMapping, CollectionChildMapping, DataCMSAttributes, FieldType } from '@see-ms/types';
 import { htmlPathToPageId } from './routes';
 
 /**
@@ -51,6 +51,13 @@ export interface DetectionOptions {
     ignoreSelectors?: string[];
     /** Classes to ignore */
     ignoreClasses?: string[];
+    /**
+     * Nested child definitions keyed by the normalized collection class name
+     * (dashes → underscores, lowercase). Each entry describes repeating child
+     * items living inside each parent collection item.
+     * e.g. { "w_tab_pane": [{ fieldName: "items", selector: ".faq-item" }] }
+     */
+    collectionChildren?: Record<string, Array<{ fieldName: string; selector: string }>>;
 }
 
 /**
@@ -78,7 +85,7 @@ function isCollectionClass(className: string, customClasses?: string[]): boolean
 
     for (const customClass of customClasses) {
         const normalizedCustom = customClass.toLowerCase().replace(/-/g, '_');
-        if (normalizedName === normalizedCustom || normalizedName.includes(normalizedCustom)) {
+        if (normalizedName === normalizedCustom) {
             return true;
         }
     }
@@ -379,6 +386,83 @@ function determineFieldType($el: cheerio.Cheerio<any>, tagName: string): FieldTy
 }
 
 /**
+ * Detect fields within a child collection element.
+ * Used for nested repeatable components (e.g. FAQ items inside a tab pane).
+ * Applies the same semantic heuristics as collection field detection.
+ */
+function detectChildFields(
+    _$: cheerio.CheerioAPI,
+    $el: cheerio.Cheerio<any>
+): Record<string, CollectionFieldMapping> {
+    const fields: Record<string, CollectionFieldMapping> = {};
+
+    // Image
+    const $img = $el.find('img').first();
+    if ($img.length) {
+        const $imgParent = $img.parent();
+        const parentClassInfo = getPrimaryClass($imgParent.attr('class'));
+        if (parentClassInfo && parentClassInfo.fieldName.includes('image')) {
+            fields.image = { selector: `.${parentClassInfo.selector}`, type: 'image', attribute: 'src' };
+        } else {
+            fields.image = { selector: 'img', type: 'image', attribute: 'src' };
+        }
+    }
+
+    // Rich text block (e.g. Webflow .w-richtext)
+    const $rich = $el.find('[class*="richtext"], [class*="rich-text"], .w-richtext').first();
+    if ($rich.length) {
+        const classInfo = getPrimaryClass($rich.attr('class'));
+        const fieldName = classInfo && !classInfo.fieldName.startsWith('w_') ? classInfo.fieldName : 'answer';
+        fields[fieldName] = {
+            selector: classInfo ? `.${classInfo.selector}` : '.w-richtext',
+            type: 'rich',
+        };
+    }
+
+    // Heading — typically the question / title
+    const $heading = $el.find('h1, h2, h3, h4, h5, h6').first();
+    if ($heading.length) {
+        const classInfo = getPrimaryClass($heading.attr('class'));
+        const tagName = ($heading.prop('tagName') || 'h3').toLowerCase();
+        const fieldName = classInfo && !classInfo.fieldName.startsWith('w_') ? classInfo.fieldName : 'question';
+        if (!fields[fieldName]) {
+            fields[fieldName] = {
+                selector: classInfo ? `.${classInfo.selector}` : tagName,
+                type: 'plain',
+            };
+        }
+    }
+
+    // Paragraph — typically the answer / description (only if no richtext found)
+    if (!fields.answer) {
+        const $p = $el.find('p').first();
+        if ($p.length) {
+            const classInfo = getPrimaryClass($p.attr('class'));
+            const fieldName = classInfo && !classInfo.fieldName.startsWith('w_') ? classInfo.fieldName : 'answer';
+            if (!fields[fieldName]) {
+                fields[fieldName] = {
+                    selector: classInfo ? `.${classInfo.selector}` : 'p',
+                    type: 'plain',
+                };
+            }
+        }
+    }
+
+    // Link
+    const $link = $el.find('a, NuxtLink, nuxt-link').not('.c_button, .c_icon_button').first();
+    if ($link.length && $link.text().trim()) {
+        const classInfo = getPrimaryClass($link.attr('class'));
+        fields.link = {
+            selector: classInfo ? `.${classInfo.selector}` : 'a',
+            type: 'link',
+            attribute: 'href',
+        };
+    }
+
+    return fields;
+}
+
+/**
  * Analyze a Vue file and extract template content
  */
 export function extractTemplateFromVue(vueContent: string): string {
@@ -561,6 +645,26 @@ export function detectEditableFields(
                     selector: collectionSelector,
                     fields: collectionFields,
                 };
+
+                // Nested children — className is already normalized (underscores, lowercase)
+                const childrenConfig = options.collectionChildren?.[className];
+                if (childrenConfig?.length) {
+                    const children: Record<string, CollectionChildMapping> = {};
+                    for (const childDef of childrenConfig) {
+                        const $firstChild = $first.find(childDef.selector).first();
+                        if (!$firstChild.length) continue;
+                        const childFields = detectChildFields($, $firstChild);
+                        if (Object.keys(childFields).length > 0) {
+                            children[childDef.fieldName] = {
+                                selector: childDef.selector,
+                                fields: childFields,
+                            };
+                        }
+                    }
+                    if (Object.keys(children).length > 0) {
+                        detectedCollections[collectionName].children = children;
+                    }
+                }
             }
         }
     });

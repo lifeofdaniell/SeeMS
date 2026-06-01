@@ -14,7 +14,6 @@ It also documents every current `cms` CLI command, the interactive wizard prompt
 From this repo, build the CLI before local testing:
 
 ```bash
-pnpm --filter @see-ms/types build
 pnpm --filter @see-ms/converter build
 ```
 
@@ -41,7 +40,6 @@ export STRAPI_APP="/tmp/see-ms-full-flow/strapi-app"
 export STRAPI_URL="http://localhost:1337"
 
 rm -rf /tmp/see-ms-full-flow
-pnpm --filter @see-ms/types build
 pnpm --filter @see-ms/converter build
 ```
 
@@ -188,7 +186,6 @@ export STRAPI_APP="$ROOT/strapi-app"
 export STRAPI_URL="http://localhost:1337"
 
 rm -rf "$ROOT"
-pnpm --filter @see-ms/types build
 pnpm --filter @see-ms/converter build
 
 node packages/converter/dist/cli.mjs convert "$WEBFLOW_EXPORT" "$NUXT_SITE" \

@@ -14,7 +14,7 @@ import { fileURLToPath } from "url";
 import { convertWebflowExport } from "./converter";
 import { completeSetup, scaffoldStrapiProject } from "./strapi-setup";
 import { manifestToSchemas, getLinkComponentSchema } from "./transformer";
-import { writeAllSchemas, createStrapiReadme, writeLinkComponentSchema } from "./schema-writer";
+import { writeAllSchemas, writeAllComponentSchemas, createStrapiReadme, writeLinkComponentSchema } from "./schema-writer";
 import { analyzeWebflowExport, renderReportMarkdown } from "./analyzer";
 import { loadSeeMSConfig, mergeConfig, normalizeConfig } from "./config";
 import { loadConversionState } from "./conversion-state";
@@ -32,6 +32,7 @@ const packageVersion = fs.readJsonSync(path.join(packageDir, "package.json")).ve
 interface CollectionConfig {
   className: string;
   collectionName: string;
+  children?: Array<{ fieldName: string; selector: string }>;
 }
 
 interface ComponentRuleConfig {
@@ -158,11 +159,29 @@ async function promptForCollections(skipConfirm = false): Promise<CollectionConf
       pc.white(`   "${className}" → Collection name `) +
       pc.dim(`(default: ${suggestedName}): `)
     );
+    const collectionName = nameInput || suggestedName;
 
-    collections.push({
-      className,
-      collectionName: nameInput || suggestedName
-    });
+    // Ask whether this collection has nested repeating children
+    const hasChildren = await confirm(
+      pc.white(`   Does each "${collectionName}" item contain nested repeating items?`),
+      false
+    );
+
+    let children: Array<{ fieldName: string; selector: string }> | undefined;
+    if (hasChildren) {
+      const fieldName = await prompt(
+        pc.white(`     Child items field name `) + pc.dim(`(e.g. "items", "faqs"): `)
+      );
+      const selector = await prompt(
+        pc.white(`     Child items CSS selector `) + pc.dim(`(e.g. ".faq-item", ".slide"): `)
+      );
+      if (fieldName && selector) {
+        children = [{ fieldName: fieldName.trim(), selector: selector.trim() }];
+        console.log(pc.dim(`     → ${collectionName}[].${fieldName} (selector: ${selector})`));
+      }
+    }
+
+    collections.push({ className, collectionName, children });
   }
 
   return collections;
@@ -698,8 +717,9 @@ program
       }
 
       console.log(pc.blue("\n📋 Generating Strapi schemas..."));
-      const schemas = manifestToSchemas(manifest);
-      await writeAllSchemas(outputDir, schemas);
+      const { contentTypes, componentSchemas } = manifestToSchemas(manifest);
+      await writeAllSchemas(outputDir, contentTypes);
+      await writeAllComponentSchemas(outputDir, componentSchemas);
 
       // Write link component if needed
       const linkSchema = getLinkComponentSchema(manifest);
@@ -712,7 +732,7 @@ program
 
       console.log(
         pc.green(
-          `  ✓ Generated ${Object.keys(schemas).length} Strapi content types`
+          `  ✓ Generated ${Object.keys(contentTypes).length} Strapi content types`
         )
       );
       console.log(pc.dim(`  ✓ Schemas written to: ${path.join(outputDir, ".see-ms", "schemas")}/`));
@@ -737,11 +757,8 @@ const extract = program
 
 extract
   .command("collections [project-dir]")
-  .description("Define collection types and regenerate the manifest, schemas, seed data, and page templates")
-  .option("--classes <classes>", "Comma-separated CSS class names to treat as collections")
-  .option("--config <path>", "Path to see-ms config file")
-  .option("--skip-prompts", "Use existing config/state without prompting")
-  .action(async (projectDir, options) => {
+  .description("Add a collection type — prompts for CSS class and Strapi name, then regenerates manifest, schemas, seed and pages")
+  .action(async (projectDir) => {
     try {
       if (!projectDir) {
         projectDir = await prompt(pc.cyan("📁 Converted project directory: "));
@@ -761,40 +778,73 @@ extract
       console.log(pc.dim(`   Source:  ${state.inputDir}`));
       console.log("");
 
-      let collections: Array<{ className: string; collectionName: string }>;
+      // Build map from existing state so we can merge new entries in
+      const mergedMap = new Map<string, CollectionConfig>(
+        state.collections.map(c => [c.className, { className: c.className, collectionName: c.name, children: c.children }])
+      );
 
-      if (options.classes) {
-        const classes = (options.classes as string).split(",").map((c: string) => c.trim()).filter(Boolean);
-        collections = classes.map((cls: string) => ({
-          className: cls,
-          collectionName: classToCollectionName(cls),
-        }));
-      } else if (options.skipPrompts) {
-        collections = state.collections.map(c => ({ className: c.className, collectionName: c.name }));
-        if (collections.length === 0) {
-          throw new Error("No collections in state. Pass --classes or remove --skip-prompts.");
+      // Show what's already been set up
+      if (mergedMap.size > 0) {
+        console.log(pc.dim("Already configured:"));
+        for (const c of mergedMap.values()) {
+          const childInfo = c.children?.length
+            ? pc.dim(` [children: ${c.children.map(ch => `${ch.fieldName} (${ch.selector})`).join(', ')}]`)
+            : '';
+          console.log(pc.dim(`  • .${c.className} → ${c.collectionName}${childInfo}`));
         }
-      } else {
-        if (state.collections.length > 0) {
-          console.log(pc.dim(`Current: ${state.collections.map(c => c.className).join(", ")}`));
-          console.log("");
-        }
-        collections = await promptForCollections(true); // skip confirm — user is already in this command
+        console.log("");
       }
 
+      // Add new collections one at a time
+      console.log(pc.white("Add a new collection (press Enter with no class to finish):"));
+      console.log(pc.dim("  This is the CSS class of the repeating element, e.g. 'c-blogpost', 'team-member_card'"));
+      console.log("");
+
+      while (true) {
+        const className = await prompt(pc.cyan("  CSS class (or Enter to finish): "));
+        if (!className.trim()) break;
+
+        const suggestedName = classToCollectionName(className.trim());
+        const nameInput = await prompt(
+          pc.white(`  Collection name in Strapi `) + pc.dim(`(default: ${suggestedName}): `)
+        );
+        const collectionName = nameInput.trim() || suggestedName;
+
+        const hasChildren = await confirm(
+          pc.white(`  Does each "${collectionName}" item contain nested repeating items?`),
+          false
+        );
+
+        let children: Array<{ fieldName: string; selector: string }> | undefined;
+        if (hasChildren) {
+          const fieldName = await prompt(pc.white(`    Child field name `) + pc.dim(`(e.g. "items", "faqs"): `));
+          const selector = await prompt(pc.white(`    Child CSS selector `) + pc.dim(`(e.g. ".faq-item"): `));
+          if (fieldName.trim() && selector.trim()) {
+            children = [{ fieldName: fieldName.trim(), selector: selector.trim() }];
+          }
+        }
+
+        mergedMap.set(className.trim(), { className: className.trim(), collectionName, children });
+        console.log(pc.green(`  ✓ Added: .${className.trim()} → ${collectionName}${children ? ` (children: ${children[0].fieldName})` : ''}`));
+        console.log("");
+      }
+
+      const collections = Array.from(mergedMap.values());
+
       if (collections.length === 0) {
-        console.log(pc.yellow("No collections defined. Skipping."));
+        console.log(pc.yellow("No collections configured — nothing to do."));
         return;
       }
 
       console.log("");
-      console.log(pc.green("✓ Collections:"));
+      console.log(pc.cyan("Collections to apply:"));
       for (const c of collections) {
-        console.log(pc.dim(`  • ${c.className} → ${c.collectionName}`));
+        const childInfo = c.children?.length ? pc.dim(` [+ ${c.children[0].fieldName} children]`) : '';
+        console.log(pc.dim(`  • .${c.className} → ${c.collectionName}${childInfo}`));
       }
       console.log("");
 
-      await runExtractCollections(resolvedDir, { collections, configPath: options.config });
+      await runExtractCollections(resolvedDir, { collections });
 
       console.log(pc.green("\n✅ Done"));
     } catch (error) {
@@ -807,14 +857,7 @@ extract
 extract
   .command("components [project-dir]")
   .description("Extract a single component from the original HTML by CSS selector")
-  .option("--name <name>", "Component name, e.g. tabs, hero-section")
-  .option("--selector <selector>", "CSS selector for the component's root element, e.g. .w-tabs")
-  .option("--role <role>", "shared-section (default) or collection-item")
-  .option("--collection-name <name>", "Collection name (for collection-item role)")
-  .option("--content-mode <mode>", "shared-global (default) | per-page | auto")
-  .option("--config <path>", "Path to see-ms config file")
-  .option("--skip-prompts", "Non-interactive: requires --name and --selector")
-  .action(async (projectDir, options) => {
+  .action(async (projectDir) => {
     try {
       if (!projectDir) {
         projectDir = await prompt(pc.cyan("📁 Converted project directory: "));
@@ -834,35 +877,22 @@ extract
       console.log(pc.dim(`   Source:  ${state.inputDir}`));
       console.log("");
 
-      let name: string = options.name || "";
-      let selector: string = options.selector || "";
-      let role: "shared-section" | "collection-item" = options.role === "collection-item"
-        ? "collection-item"
-        : "shared-section";
-      let collectionName: string | undefined = options.collectionName;
-      let contentMode: string | undefined = options.contentMode;
+      let name = await prompt(pc.cyan("Component name (e.g. tabs, hero-section): "));
+      let selector = await prompt(pc.cyan("CSS selector for the root element (e.g. .w-tabs): "));
+      const role = await select(pc.cyan("What kind of component?"), [
+        { label: "Shared section — one instance per page (nav, footer, hero)", value: "shared-section" },
+        { label: "Collection item — repeats within a page (cards, tabs)", value: "collection-item" },
+      ], "shared-section") as "shared-section" | "collection-item";
 
-      if (!options.skipPrompts) {
-        if (!name) {
-          name = await prompt(pc.cyan("Component name (e.g. tabs, hero-section): "));
-        }
-        if (!selector) {
-          selector = await prompt(pc.cyan("CSS selector for the root element (e.g. .w-tabs): "));
-        }
-        role = await select(pc.cyan("What kind of component?"), [
-          { label: "Shared section — one instance per page (nav, footer, hero)", value: "shared-section" },
-          { label: "Collection item — repeats within a page (cards, tabs)", value: "collection-item" },
-        ], role) as "shared-section" | "collection-item";
-
-        if (role === "collection-item" && !collectionName) {
-          const suggested = classToCollectionName(name);
-          const ans = await prompt(pc.cyan(`Collection name (${suggested}): `));
-          collectionName = ans || suggested;
-        }
+      let collectionName: string | undefined;
+      if (role === "collection-item") {
+        const suggested = classToCollectionName(name);
+        const ans = await prompt(pc.cyan(`Collection name (default: ${suggested}): `));
+        collectionName = ans || suggested;
       }
 
-      if (!name) throw new Error("Component name is required (--name)");
-      if (!selector) throw new Error("CSS selector is required (--selector)");
+      if (!name) throw new Error("Component name is required");
+      if (!selector) throw new Error("CSS selector is required");
 
       console.log("");
       console.log(pc.green("✓ Extracting:"));
@@ -879,8 +909,6 @@ extract
         selector,
         role,
         collectionName,
-        contentMode: contentMode as any,
-        configPath: options.config,
       });
 
       console.log(pc.green("\n✅ Done"));

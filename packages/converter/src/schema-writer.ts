@@ -24,7 +24,7 @@ export async function writeStrapiSchema(
 }
 
 /**
- * Write all schemas
+ * Write all content-type schemas
  */
 export async function writeAllSchemas(
   outputDir: string,
@@ -32,6 +32,30 @@ export async function writeAllSchemas(
 ): Promise<void> {
   for (const [name, schema] of Object.entries(schemas)) {
     await writeStrapiSchema(outputDir, name, schema);
+  }
+}
+
+/**
+ * Write Strapi component schemas for nested children.
+ * @param componentSchemas - keyed as "category/name", e.g. "default/faq-groups-items"
+ */
+export async function writeAllComponentSchemas(
+  outputDir: string,
+  componentSchemas: Record<string, any>
+): Promise<void> {
+  if (!componentSchemas || Object.keys(componentSchemas).length === 0) return;
+
+  const baseDir = path.join(getschemasDir(outputDir), 'components');
+
+  for (const [uid, schema] of Object.entries(componentSchemas)) {
+    // uid is "default/faq-groups-items" → category=default, name=faq-groups-items
+    const lastSlash = uid.lastIndexOf('/');
+    const category = lastSlash >= 0 ? uid.slice(0, lastSlash) : 'default';
+    const name = lastSlash >= 0 ? uid.slice(lastSlash + 1) : uid;
+
+    const dir = path.join(baseDir, category);
+    await fs.ensureDir(dir);
+    await fs.writeFile(path.join(dir, `${name}.json`), JSON.stringify(schema, null, 2), 'utf-8');
   }
 }
 

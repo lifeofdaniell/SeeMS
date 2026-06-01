@@ -58,6 +58,20 @@ export interface CollectionFieldMapping {
   attribute?: string;
 }
 
+/**
+ * A nested repeating child inside a collection item.
+ * Rendered as a Strapi repeatable component.
+ * e.g. FAQ groups → items, tab panes → slides
+ */
+export interface CollectionChildMapping {
+  /** CSS selector for child items (relative to the parent collection item element) */
+  selector: string;
+  /** Fields within each child item */
+  fields: Record<string, CollectionFieldMapping | string>;
+  /** Strapi component uid, e.g. 'default.faq-groups-items'. Derived automatically if omitted. */
+  componentUid?: string;
+}
+
 export interface CollectionMapping {
   /** CSS selector for the repeating collection items */
   selector: string;
@@ -69,6 +83,13 @@ export interface CollectionMapping {
   storage?: 'collection-type' | 'page-repeatable' | 'global-repeatable';
   /** Optional limit for number of items */
   limit?: number;
+  /**
+   * Nested repeating children within each item.
+   * Key = field name on the parent item (e.g. "items").
+   * Value = child selector + fields.
+   * Generates a Strapi repeatable component field.
+   */
+  children?: Record<string, CollectionChildMapping>;
 }
 
 export interface PageManifest {

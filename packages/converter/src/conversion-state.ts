@@ -8,6 +8,8 @@ import type { ProjectTarget } from "./boilerplate";
 export interface ConversionCollection {
   className: string;
   name: string;
+  /** Nested repeating children within each item */
+  children?: Array<{ fieldName: string; selector: string }>;
 }
 
 export interface ConversionState {

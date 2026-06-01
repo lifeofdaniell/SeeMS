@@ -37,7 +37,7 @@ import { setupBoilerplate } from './boilerplate';
 import { generateManifest, writeManifest } from './manifest';
 import { transformAllVuePages, transformSharedComponentsToReactive } from './vue-transformer';
 import { manifestToSchemas, getLinkComponentSchema } from './transformer';
-import { writeAllSchemas, createStrapiReadme, writeLinkComponentSchema } from './schema-writer';
+import { writeAllSchemas, writeAllComponentSchemas, createStrapiReadme, writeLinkComponentSchema } from './schema-writer';
 import { extractAllContent, formatForStrapi } from './content-extractor';
 import { writeSeedData, createSeedReadme } from './seed-writer';
 import { extractSharedComponents, replaceWithComponent } from './component-extractor';
@@ -368,11 +368,12 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
 
         // Step 10: Generate Strapi schemas
         console.log(pc.blue('\n📋 Generating Strapi schemas...'));
-        const schemas = manifestToSchemas(manifest);
-        Object.keys(schemas).forEach((name) => {
+        const { contentTypes, componentSchemas } = manifestToSchemas(manifest);
+        Object.keys(contentTypes).forEach((name) => {
             generatedFiles.add(toPosixPath(path.join('.see-ms', 'schemas', `${name}.json`)));
         });
-        await writeAllSchemas(outputDir, schemas);
+        await writeAllSchemas(outputDir, contentTypes);
+        await writeAllComponentSchemas(outputDir, componentSchemas);
         await createStrapiReadme(outputDir);
 
         // Write link component schema if any link fields exist
@@ -383,7 +384,7 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
             console.log(pc.dim('  ✓ Generated shared.link component schema'));
         }
 
-        console.log(pc.green(`  ✓ Generated ${Object.keys(schemas).length} Strapi content types`));
+        console.log(pc.green(`  ✓ Generated ${Object.keys(contentTypes).length} Strapi content types`));
         console.log(pc.dim('    View schemas in: .see-ms/schemas/'));
 
         if (provider === 'strapi') {
@@ -445,7 +446,7 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
             components: sharedComponents,
             fields: totalFields,
             collections: totalCollections,
-            schemas: Object.keys(schemas).length,
+            schemas: Object.keys(contentTypes).length,
             seedPages: pagesWithContent,
             warnings: []
         });

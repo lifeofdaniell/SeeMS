@@ -22,10 +22,14 @@ import { glob } from 'glob';
 import { loadConversionState, writeConversionState, hashSourceFiles } from './conversion-state';
 import { generateManifest, generateManifestFromHtmlMap, writeManifest, readManifest } from './manifest';
 import { manifestToSchemas, getLinkComponentSchema } from './transformer';
-import { writeAllSchemas, createStrapiReadme, writeLinkComponentSchema } from './schema-writer';
+import { writeAllSchemas, writeAllComponentSchemas, createStrapiReadme, writeLinkComponentSchema } from './schema-writer';
 import { extractAllContent, formatForStrapi } from './content-extractor';
 import { writeSeedData, createSeedReadme } from './seed-writer';
-import { scanAssets, findHTMLFiles, readHTMLFile, writeVueComponent, formatVueFiles } from './filesystem';
+import {
+  scanAssets, findHTMLFiles, readHTMLFile,
+  writeVueComponent, formatVueFiles,
+  generateBaseLayout, writeAstroPage,
+} from './filesystem';
 import { getPageRouteInfo, htmlPathToPageId } from './routes';
 import { loadSeeMSConfig, writeSeeMSConfig, normalizeConfig, mergeConfig, minimalConfig } from './config';
 import {
@@ -35,9 +39,10 @@ import {
   createStrapiBootstrap,
 } from './editor-integration';
 import { replaceWithComponent } from './component-extractor';
-import { parseHTML, transformForNuxt, htmlToVueComponent } from './parser';
+import { parseHTML, transformForNuxt, htmlToVueComponent, extractPageScripts } from './parser';
+import type { ParsedPage } from './parser';
 import { transformAllVuePages, transformSharedComponentsToReactive } from './vue-transformer';
-import type { SeeMSConfig, SharedComponent } from '@see-ms/types';
+import type { SeeMSConfig, SharedComponent, CMSManifest } from '@see-ms/types';
 import type { ProjectTarget } from './boilerplate';
 
 // ---------------------------------------------------------------------------
@@ -89,31 +94,148 @@ async function getExistingComponentNames(projectDir: string): Promise<string[]> 
 }
 
 /**
- * Re-generate all page Vue files from source HTML (fresh, no reactive bindings yet).
- * Pass an htmlContentMap that may have already been modified (e.g., component markers
- * injected by replaceWithComponent).
+ * Re-generate all page files from source HTML (fresh, no reactive bindings yet).
+ * Handles both Nuxt (.vue) and Astro (.astro) targets.
+ *
+ * For astro-vue: writes Vue SFCs in src/components/pages/ (rendered server-side by
+ * Astro's Vue integration — no client:only hydration) and Astro wrappers in src/pages/
+ * that fetch from Strapi server-side and pass content as a prop.
+ *
+ * Pass an htmlContentMap that may have already been modified (e.g. component markers
+ * injected by replaceWithComponent).  Pass manifest so Astro wrappers can include the
+ * correct collection fetches for each page.
  */
 async function regeneratePageFiles(
   htmlFiles: string[],
   htmlContentMap: Map<string, string>,
+  originalHtmlContentMap: Map<string, string>,
   projectDir: string,
   target: ProjectTarget,
   cssFiles: string[],
   editorEnabled: boolean,
-  pageComponentMap: Map<string, string[]>
+  pageComponentMap: Map<string, string[]>,
+  manifest?: CMSManifest
 ): Promise<void> {
-  for (const htmlFile of htmlFiles) {
-    const pageName = htmlPathToPageId(htmlFile);
-    const html = htmlContentMap.get(pageName)!;
-    const parsed = parseHTML(html, htmlFile);
-    const transformed = transformForNuxt(parsed.htmlContent, htmlFile, {
-      linkMode: target === 'astro-vue' ? 'anchor' : 'nuxt',
+  if (target === 'astro-vue') {
+    // Two-pass: parse all pages first, then deduplicate scripts, then write
+    type AstroData = { htmlFile: string; pageName: string; parsed: ParsedPage; transformed: string };
+    const astroDataMap = new Map<string, AstroData>();
+    const pageScriptsMap = new Map<string, ReturnType<typeof extractPageScripts>>();
+
+    for (const htmlFile of htmlFiles) {
+      const pageName = htmlPathToPageId(htmlFile);
+      const html = htmlContentMap.get(pageName)!;
+      const parsed = parseHTML(html, htmlFile);
+      const transformed = transformForNuxt(parsed.htmlContent, htmlFile, { linkMode: 'anchor' });
+      // Extract scripts from original HTML (before component substitutions stripped them)
+      pageScriptsMap.set(pageName, extractPageScripts(originalHtmlContentMap.get(pageName) ?? html));
+      astroDataMap.set(pageName, { htmlFile, pageName, parsed, transformed });
+    }
+
+    // Find body inline scripts shared across 2+ pages → go in BaseLayout
+    const inlineScriptCounts = new Map<string, number>();
+    for (const scripts of pageScriptsMap.values()) {
+      const seenInPage = new Set<string>();
+      for (const content of scripts.bodyInline) {
+        if (!seenInPage.has(content)) {
+          inlineScriptCounts.set(content, (inlineScriptCounts.get(content) ?? 0) + 1);
+          seenInPage.add(content);
+        }
+      }
+    }
+    const sharedBodyInlineSet = new Set(
+      [...inlineScriptCounts.entries()]
+        .filter(([, count]) => count > 1)
+        .map(([content]) => content)
+    );
+
+    // Regenerate BaseLayout (CSS order + CDN scripts come from the first page)
+    const firstPageName = htmlFiles[0] ? htmlPathToPageId(htmlFiles[0]) : null;
+    const firstScripts = firstPageName ? pageScriptsMap.get(firstPageName) : null;
+    const firstParsed = firstPageName ? astroDataMap.get(firstPageName)?.parsed : null;
+    const cssOrderFromHtml = (firstParsed?.cssFiles ?? []).map((f: string) => path.basename(f));
+    const cssFilesOrdered = [...cssFiles].sort((a, b) => {
+      const ai = cssOrderFromHtml.indexOf(path.basename(a));
+      const bi = cssOrderFromHtml.indexOf(path.basename(b));
+      if (ai === -1 && bi === -1) return 0;
+      if (ai === -1) return 1;
+      if (bi === -1) return -1;
+      return ai - bi;
     });
-    const componentImports = pageComponentMap.get(pageName);
-    const vueComponent = htmlToVueComponent(transformed, pageName, componentImports);
-    await writeVueComponent(projectDir, htmlFile, vueComponent, target, cssFiles, editorEnabled);
+
+    await generateBaseLayout(projectDir, {
+      cssFiles: cssFilesOrdered,
+      headCdnScripts: firstScripts?.headCdn ?? [],
+      headInlineScripts: firstScripts?.headInline ?? [],
+      bodyCdnScripts: firstScripts?.bodyCdn ?? [],
+      sharedBodyInlineScripts: Array.from(sharedBodyInlineSet),
+    });
+
+    // Write Vue SFC + Astro wrapper per page
+    const vueComponentsDir = path.join(projectDir, 'src', 'components', 'pages');
+    const astroPagesDir   = path.join(projectDir, 'src', 'pages');
+    const layoutPath      = path.join(projectDir, 'src', 'layouts', 'BaseLayout.astro');
+
+    for (const { htmlFile, pageName, parsed, transformed } of astroDataMap.values()) {
+      // --- Vue SFC (src/components/pages/<name>.vue) ---
+      // Just the static template for now; transformVueToReactive will add
+      // `defineProps<{content}>` and Vue reactive bindings in the next step.
+      const vueName = htmlFile.replace('.html', '.vue');
+      const vuePath = path.join(vueComponentsDir, vueName);
+      await fs.ensureDir(path.dirname(vuePath));
+      await fs.writeFile(vuePath, `<template>\n${transformed}\n</template>\n`, 'utf-8');
+
+      // --- Astro wrapper (src/pages/<name>.astro) ---
+      // Fetches from Strapi server-side, passes `content` prop to Vue component.
+      // Vue renders the template SSR — Lenis/GSAP see a fully hydrated DOM.
+      const astroName = htmlFile.replace('.html', '.astro');
+      const astroPath = path.join(astroPagesDir, astroName);
+
+      const relativeLayout = toRelativeImport(
+        path.relative(path.dirname(astroPath), layoutPath)
+      );
+      const relativeVue = toRelativeImport(
+        path.relative(path.dirname(astroPath), vuePath)
+      );
+
+      const pageCollections = Object.keys(manifest?.pages[pageName]?.collections || {});
+      const dataFetch = buildPageDataFetch(pageName, pageCollections);
+
+      const scripts = pageScriptsMap.get(pageName);
+      const uniqueScripts = scripts?.bodyInline.filter(s => !sharedBodyInlineSet.has(s)) ?? [];
+      const pageScriptsSlot = uniqueScripts.length > 0
+        ? `\n  <Fragment slot="page-scripts">\n${uniqueScripts.map(s => `    <script is:inline>${s}</script>`).join('\n')}\n  </Fragment>`
+        : '';
+
+      const safeTitle     = (parsed.title     || '').replace(/"/g, '&quot;');
+      const safeWfPage    = (parsed.wfPage     || '').replace(/"/g, '&quot;');
+      const safeWfSite    = (parsed.wfSite     || '').replace(/"/g, '&quot;');
+      const safeBodyClass = (parsed.bodyClass  || '').replace(/"/g, '&quot;');
+
+      await fs.ensureDir(path.dirname(astroPath));
+      await fs.writeFile(astroPath, `---
+// see-ms:generated
+import BaseLayout from '${relativeLayout}';
+import Page from '${relativeVue}';
+${dataFetch}
+---
+<BaseLayout title="${safeTitle}" wfPage="${safeWfPage}" wfSite="${safeWfSite}" bodyClass="${safeBodyClass}">
+  <Page :content="content" />${pageScriptsSlot}
+</BaseLayout>
+`, 'utf-8');
+    }
+  } else {
+    for (const htmlFile of htmlFiles) {
+      const pageName = htmlPathToPageId(htmlFile);
+      const html = htmlContentMap.get(pageName)!;
+      const parsed = parseHTML(html, htmlFile);
+      const transformed = transformForNuxt(parsed.htmlContent, htmlFile, { linkMode: 'nuxt' });
+      const componentImports = pageComponentMap.get(pageName);
+      const vueComponent = htmlToVueComponent(transformed, pageName, componentImports);
+      await writeVueComponent(projectDir, htmlFile, vueComponent, target, cssFiles, editorEnabled);
+    }
+    await formatVueFiles(projectDir, target);
   }
-  await formatVueFiles(projectDir, target);
 }
 
 async function regenerateSchemasAndSeed(
@@ -122,8 +244,9 @@ async function regenerateSchemasAndSeed(
   htmlContentMap: Map<string, string>,
   provider: string
 ): Promise<void> {
-  const schemas = manifestToSchemas(manifest);
-  await writeAllSchemas(projectDir, schemas);
+  const { contentTypes, componentSchemas } = manifestToSchemas(manifest);
+  await writeAllSchemas(projectDir, contentTypes);
+  await writeAllComponentSchemas(projectDir, componentSchemas);
   await createStrapiReadme(projectDir);
   const linkSchema = getLinkComponentSchema(manifest);
   if (linkSchema) await writeLinkComponentSchema(projectDir);
@@ -141,6 +264,40 @@ async function regenerateSchemasAndSeed(
   console.log(pc.green(`  ✓ Seed data extracted from ${pagesWithContent} pages`));
 }
 
+function toRelativeImport(p: string): string {
+  const normalized = p.split(path.sep).join('/');
+  return normalized.startsWith('.') ? normalized : `./${normalized}`;
+}
+
+/**
+ * Build a Strapi data-fetch block for an Astro page frontmatter.
+ * Always fetches the page single-type; also fetches each collection-type.
+ */
+function buildPageDataFetch(pageName: string, collectionNames: string[]): string {
+  const lines: string[] = [
+    `const _strapiUrl = import.meta.env.PUBLIC_STRAPI_URL || 'http://localhost:1337';`,
+    `let content: Record<string, any> = {};`,
+    `try {`,
+    `  const _pageRes = await fetch(\`\${_strapiUrl}/api/${pageName}?populate=*\`);`,
+    `  if (_pageRes.ok) {`,
+    `    const _pageJson = await _pageRes.json();`,
+    `    content = _pageJson?.data || _pageJson || {};`,
+    `  }`,
+  ];
+  for (const collName of collectionNames) {
+    const v = `_${collName.replace(/[^a-zA-Z0-9]/g, '_')}`;
+    lines.push(
+      `  const ${v}Res = await fetch(\`\${_strapiUrl}/api/${collName}?populate=*\`);`,
+      `  if (${v}Res.ok) {`,
+      `    const ${v}Json = await ${v}Res.json();`,
+      `    content.${collName} = ${v}Json?.data || ${v}Json || [];`,
+      `  }`
+    );
+  }
+  lines.push(`} catch (_e) { /* Strapi unavailable — renders with empty content */ }`);
+  return lines.join('\n');
+}
+
 function toComponentName(name: string): string {
   return name
     .replace(/[^a-zA-Z0-9-_\s]/g, '')
@@ -155,7 +312,12 @@ function toComponentName(name: string): string {
 // ---------------------------------------------------------------------------
 
 export interface ExtractCollectionsOptions {
-  collections: Array<{ className: string; collectionName: string }>;
+  collections: Array<{
+    className: string;
+    collectionName: string;
+    /** Nested repeating children within each item */
+    children?: Array<{ fieldName: string; selector: string }>;
+  }>;
   configPath?: string;
   config?: SeeMSConfig;
 }
@@ -175,6 +337,15 @@ export async function runExtractCollections(
   const { collections } = options;
   const collectionClasses = collections.map(c => c.className);
   const collectionNames = Object.fromEntries(collections.map(c => [c.className, c.collectionName]));
+
+  // Build children map keyed by normalized class name (dashes→underscores, lowercase)
+  const collectionChildren: Record<string, Array<{ fieldName: string; selector: string }>> = {};
+  for (const c of collections) {
+    if (c.children?.length) {
+      const key = c.className.toLowerCase().replace(/-/g, '_');
+      collectionChildren[key] = c.children;
+    }
+  }
 
   // Read original HTML
   console.log(pc.blue('\n🔍 Reading source HTML files...'));
@@ -224,6 +395,7 @@ export async function runExtractCollections(
   const manifest = await generateManifestFromHtmlMap(originalHtmlContentMap, pageRoutes, {
     collectionClasses,
     collectionNames,
+    collectionChildren,
     sharedComponents,
     componentsDir: path.join(projectDir, 'components'),
     ignoreSelectors: mergedConfig.ignore?.selectors,
@@ -240,14 +412,17 @@ export async function runExtractCollections(
   // correct (the existing files have the useStrapiContent guard and won't
   // accept a re-transformation otherwise).
   console.log(pc.blue('\n⚙️  Rebuilding page files with collection bindings...'));
-  await regeneratePageFiles(htmlFiles, htmlContentMap, projectDir, target, assets.css, editorEnabled, pageComponentMap);
+  await regeneratePageFiles(htmlFiles, htmlContentMap, originalHtmlContentMap, projectDir, target, assets.css, editorEnabled, pageComponentMap, manifest);
   console.log(pc.green(`  ✓ Rebuilt ${htmlFiles.length} pages`));
 
-  // Transform to reactive (fresh files, no guard to skip)
-  const pagesDir = target === 'astro-vue'
+  // Transform to reactive (fresh files, no guard to skip).
+  // For astro-vue: Vue SFCs live in src/components/pages/ (not src/pages/).
+  // transformVueToReactive emits defineProps instead of useStrapiContent so
+  // Vue renders server-side; the Astro wrapper fetches from Strapi.
+  const vueDir = target === 'astro-vue'
     ? path.join(projectDir, 'src', 'components', 'pages')
     : path.join(projectDir, 'pages');
-  await transformAllVuePages(pagesDir, manifest, { target });
+  await transformAllVuePages(vueDir, manifest, { target });
   await transformSharedComponentsToReactive(path.join(projectDir, 'components'), manifest, { target });
   console.log(pc.green(`  ✓ Reactive bindings applied`));
 
@@ -274,7 +449,11 @@ export async function runExtractCollections(
 
   await writeConversionState(projectDir, {
     ...state,
-    collections: collections.map(c => ({ className: c.className, name: c.collectionName })),
+    collections: collections.map(c => ({
+      className: c.className,
+      name: c.collectionName,
+      children: c.children,
+    })),
     sources: await hashSourceFiles(inputDir),
   });
   console.log(pc.green('  ✓ Config and state updated'));
@@ -424,18 +603,20 @@ export async function runExtractComponent(
   const collectionClasses = stateCollections.map(c => c.className);
   const collectionNames = Object.fromEntries(stateCollections.map(c => [c.className, c.name]));
 
-  // Re-generate all page files from the (now-modified) htmlContentMap
+  // Re-generate all page files from the (now-modified) htmlContentMap.
+  // Pass a null manifest here — we generate it just after from the fresh pages.
   console.log(pc.blue('\n⚙️  Rebuilding pages with component tag...'));
-  await regeneratePageFiles(htmlFiles, htmlContentMap, projectDir, target, assets.css, editorEnabled, pageComponentMap);
+  await regeneratePageFiles(htmlFiles, htmlContentMap, originalHtmlContentMap, projectDir, target, assets.css, editorEnabled, pageComponentMap);
   console.log(pc.green(`  ✓ Rebuilt ${htmlFiles.length} pages`));
 
-  // Generate manifest from fresh static Vue files
+  // Generate manifest from fresh static files.
+  // For astro-vue: detect fields from src/components/pages/ (the Vue SFCs).
   console.log(pc.blue('\n🔍 Detecting CMS fields...'));
-  const pagesDir = target === 'astro-vue'
+  const vueComponentsDir = target === 'astro-vue'
     ? path.join(projectDir, 'src', 'components', 'pages')
     : path.join(projectDir, 'pages');
 
-  const manifest = await generateManifest(pagesDir, {
+  const manifest = await generateManifest(vueComponentsDir, {
     collectionClasses,
     collectionNames,
     sharedComponents: allSharedComponents,
@@ -448,9 +629,15 @@ export async function runExtractComponent(
   await writeManifest(projectDir, manifest);
   console.log(pc.green(`  ✓ Manifest updated`));
 
-  // Transform pages + new component to reactive
+  // Now re-generate pages again with manifest so the Astro wrappers get
+  // the correct Strapi collection fetches injected.
+  if (target === 'astro-vue') {
+    await regeneratePageFiles(htmlFiles, htmlContentMap, originalHtmlContentMap, projectDir, target, assets.css, editorEnabled, pageComponentMap, manifest);
+  }
+
+  // Transform Vue SFCs to reactive — emits defineProps for astro-vue
   console.log(pc.blue('\n⚡ Applying reactive bindings...'));
-  await transformAllVuePages(pagesDir, manifest, { target });
+  await transformAllVuePages(vueComponentsDir, manifest, { target });
   await transformSharedComponentsToReactive(componentsDir, manifest, { target });
   console.log(pc.green(`  ✓ Done`));
 

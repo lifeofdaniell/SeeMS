@@ -28,6 +28,11 @@ export interface ManifestOptions {
   provider?: 'strapi' | 'contentful' | 'sanity';
   /** Route lookup by page id */
   pageRoutes?: Record<string, string>;
+  /**
+   * Nested child definitions keyed by normalized collection class name.
+   * e.g. { "w_tab_pane": [{ fieldName: "items", selector: ".faq-item" }] }
+   */
+  collectionChildren?: Record<string, Array<{ fieldName: string; selector: string }>>;
 }
 
 /**
@@ -139,7 +144,7 @@ function buildPages(
         let newName = collectionKey;
         for (const [className, displayName] of Object.entries(options.collectionNames)) {
           const normalizedClassName = className.replace(/-/g, '_');
-          if (collectionKey.includes(normalizedClassName) || collectionKey === normalizedClassName) {
+          if (collectionKey === normalizedClassName) {
             newName = displayName;
             break;
           }
@@ -200,6 +205,7 @@ export async function generateManifest(
       ...collectionItemSelectors
     ],
     ignoreClasses: options.ignoreClasses,
+    collectionChildren: options.collectionChildren,
   };
 
   const analyzed = await analyzeVuePages(pagesDir, detectionOptions);
@@ -231,6 +237,7 @@ export async function generateManifestFromHtmlMap(
       ...collectionItemSelectors
     ],
     ignoreClasses: options.ignoreClasses,
+    collectionChildren: options.collectionChildren,
   };
 
   const analyzed: Record<string, { fields: Record<string, any>; collections: Record<string, any> }> = {};

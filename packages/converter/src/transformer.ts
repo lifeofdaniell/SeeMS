@@ -138,17 +138,13 @@ function pageToStrapiSchema(pageName: string, fields: Record<string, FieldMappin
 }
 
 /**
- * Convert a collection to a Strapi schema (collection type)
+ * Build Strapi attributes from a flat field map.
+ * Shared by collection items and nested component schemas.
  */
-function collectionToStrapiSchema(
-    collectionName: string,
-    collection: any
-): StrapiSchema {
+function buildAttributes(fields: Record<string, any>): Record<string, any> {
     const attributes: Record<string, any> = {};
 
-    // Convert each field in the collection
-    for (const [fieldName, fieldConfig] of Object.entries(collection.fields)) {
-        // Get type from field config if available, otherwise infer from name
+    for (const [fieldName, fieldConfig] of Object.entries(fields)) {
         let fieldType: string | undefined;
 
         if (typeof fieldConfig === 'object' && fieldConfig !== null && 'type' in fieldConfig) {
@@ -156,72 +152,83 @@ function collectionToStrapiSchema(
         }
 
         if (fieldType) {
-            // Use the detected field type
             const strapiType = mapFieldTypeToStrapi(fieldType);
-
             if (strapiType.isComponent) {
-                attributes[fieldName] = {
-                    type: 'component',
-                    component: strapiType.component,
-                    repeatable: false,
-                };
+                attributes[fieldName] = { type: 'component', component: strapiType.component, repeatable: false };
             } else {
-                attributes[fieldName] = {
-                    type: strapiType.type,
-                };
+                attributes[fieldName] = { type: strapiType.type };
             }
         } else {
-            // Fallback: Determine type based on field name
-            let type = 'string';
-
+            // Name-based fallback
             if (fieldName === 'image' || fieldName.includes('image')) {
-                type = 'media';
-            } else if (fieldName === 'description' || fieldName === 'content') {
-                type = 'richtext';
+                attributes[fieldName] = { type: 'media' };
+            } else if (fieldName === 'description' || fieldName === 'content' || fieldName === 'answer') {
+                attributes[fieldName] = { type: 'richtext' };
             } else if (fieldName === 'link' || fieldName === 'url') {
-                // Use link component for link fields
-                attributes[fieldName] = {
-                    type: 'component',
-                    component: 'shared.link',
-                    repeatable: false,
-                };
-                continue;
-            } else if (fieldName === 'title' || fieldName === 'tag') {
-                type = 'string';
+                attributes[fieldName] = { type: 'component', component: 'shared.link', repeatable: false };
+            } else {
+                attributes[fieldName] = { type: 'string' };
             }
+        }
+    }
 
-            attributes[fieldName] = {
-                type,
+    return attributes;
+}
+
+/**
+ * Convert a collection to a Strapi schema (collection type).
+ * Returns the collection schema plus any component schemas needed for children.
+ */
+function collectionToStrapiSchema(
+    collectionName: string,
+    collection: any
+): { schema: StrapiSchema; componentSchemas: Record<string, any> } {
+    const attributes = buildAttributes(collection.fields);
+    const componentSchemas: Record<string, any> = {};
+
+    // Nested children → Strapi repeatable component fields
+    if (collection.children) {
+        for (const [childFieldName, childDef] of Object.entries<any>(collection.children)) {
+            const kebabCollection = collectionName.replace(/_/g, '-');
+            const uid = childDef.componentUid || `default.${kebabCollection}-${childFieldName}`;
+            // "default.faq-groups-items" → key "default/faq-groups-items" for file path
+            const componentKey = uid.replace('.', '/');
+
+            attributes[childFieldName] = { type: 'component', component: uid, repeatable: true };
+
+            const displayName = uid
+                .split(/[.\-_]/)
+                .map((w: string) => w.charAt(0).toUpperCase() + w.slice(1))
+                .join(' ');
+
+            componentSchemas[componentKey] = {
+                collectionName: uid.replace(/\./g, '_'),
+                info: { displayName, icon: 'layer' },
+                options: {},
+                attributes: buildAttributes(childDef.fields),
             };
         }
     }
 
-    // Generate display name
     const displayName = collectionName
         .split(/[-_]/)
-        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+        .map((word: string) => word.charAt(0).toUpperCase() + word.slice(1))
         .join(' ');
 
-    // Convert underscores to kebab-case for consistency
     const kebabCaseName = collectionName.replace(/_/g, '-');
-
-    // Get singular name (remove trailing 's')
     const singularName = kebabCaseName.endsWith('s')
         ? kebabCaseName.slice(0, -1)
         : kebabCaseName;
 
     return {
-        kind: 'collectionType',
-        collectionName: kebabCaseName,
-        info: {
-            singularName: singularName,
-            pluralName: kebabCaseName,
-            displayName: displayName,
+        schema: {
+            kind: 'collectionType',
+            collectionName: kebabCaseName,
+            info: { singularName, pluralName: kebabCaseName, displayName },
+            options: { draftAndPublish: true },
+            attributes,
         },
-        options: {
-            draftAndPublish: true,
-        },
-        attributes,
+        componentSchemas,
     };
 }
 
@@ -264,33 +271,39 @@ function hasLinkFields(manifest: CMSManifest): boolean {
 }
 
 /**
- * Transform entire manifest to Strapi schemas
- * Returns content type schemas and optionally the link component schema
+ * Transform entire manifest to Strapi schemas.
+ * Returns content-type schemas AND any Strapi component schemas needed for
+ * nested children (keyed as "category/name", e.g. "default/faq-groups-items").
  */
-export function manifestToSchemas(manifest: CMSManifest): Record<string, StrapiSchema> {
-    const schemas: Record<string, StrapiSchema> = {};
+export function manifestToSchemas(manifest: CMSManifest): {
+    contentTypes: Record<string, StrapiSchema>;
+    componentSchemas: Record<string, any>;
+} {
+    const contentTypes: Record<string, StrapiSchema> = {};
+    const componentSchemas: Record<string, any> = {};
 
     // Convert pages to single types
     for (const [pageName, page] of Object.entries(manifest.pages)) {
-        // Only create schema if page has fields
         if (page.fields && Object.keys(page.fields).length > 0) {
-            schemas[pageName] = pageToStrapiSchema(pageName, page.fields);
+            contentTypes[pageName] = pageToStrapiSchema(pageName, page.fields);
         }
 
         // Convert collections to collection types
         if (page.collections) {
             for (const [collectionName, collection] of Object.entries(page.collections)) {
-                schemas[collectionName] = collectionToStrapiSchema(collectionName, collection);
+                const { schema, componentSchemas: childSchemas } = collectionToStrapiSchema(collectionName, collection);
+                contentTypes[collectionName] = schema;
+                Object.assign(componentSchemas, childSchemas);
             }
         }
     }
 
     // Add global schema if present
     if (manifest.global?.fields && Object.keys(manifest.global.fields).length > 0) {
-        schemas['global'] = pageToStrapiSchema('global', manifest.global.fields);
+        contentTypes['global'] = pageToStrapiSchema('global', manifest.global.fields);
     }
 
-    return schemas;
+    return { contentTypes, componentSchemas };
 }
 
 /**

@@ -78,6 +78,58 @@ function replaceWithBinding(
 }
 
 /**
+ * Apply a Vue binding to a field element within a given context element.
+ * prefix is the JS variable name, e.g. "item" or "child".
+ */
+function applyFieldBinding(
+  _$: cheerio.CheerioAPI,
+  $context: cheerio.Cheerio<any>,
+  selector: string,
+  fieldName: string,
+  fieldType: string | undefined,
+  prefix: string
+): void {
+  const $fieldEl = $context.find(selector);
+  if (!$fieldEl.length) return;
+
+  const isImage = fieldType === "image" || fieldName === "image" || fieldName.includes("image");
+  const isLink  = fieldType === "link"  || fieldName === "link"  || fieldName === "url";
+
+  if (isImage) {
+    if ($fieldEl.is("img")) {
+      $fieldEl.attr(":src", `${prefix}.${fieldName}`);
+      $fieldEl.removeAttr("src");
+    } else {
+      const $img = $fieldEl.find("img").first();
+      if ($img.length) {
+        $img.attr(":src", `${prefix}.${fieldName}`);
+        $img.removeAttr("src");
+      }
+    }
+  } else if (isLink) {
+    const $link = $fieldEl.is("a") || $fieldEl.is("NuxtLink") || $fieldEl.is("nuxt-link")
+      ? $fieldEl
+      : $fieldEl.find("a, NuxtLink, nuxt-link").first();
+    if ($link.length) {
+      const isNuxtLink = $link.is("NuxtLink") || $link.is("nuxt-link");
+      $link.attr(isNuxtLink ? ":to" : ":href", `${prefix}.${fieldName}?.url`);
+      $link.attr(":target", `${prefix}.${fieldName}?.newTab ? '_blank' : undefined`);
+      $link.removeAttr("href");
+      $link.removeAttr("target");
+      $link.removeAttr("to");
+      $link.empty();
+      $link.text(`{{ ${prefix}.${fieldName}?.text }}`);
+    }
+  } else if (fieldType === "rich") {
+    $fieldEl.attr("v-html", `${prefix}.${fieldName}`);
+    $fieldEl.empty();
+  } else {
+    $fieldEl.empty();
+    $fieldEl.text(`{{ ${prefix}.${fieldName} }}`);
+  }
+}
+
+/**
  * Transform collection elements to use v-for
  */
 function transformCollection(
@@ -85,12 +137,9 @@ function transformCollection(
   collectionName: string,
   collection: CollectionMapping
 ): void {
-  // Find all collection items
   const $items = $(collection.selector);
-
   if ($items.length === 0) return;
 
-  // Get the first item as template
   const $first = $items.first();
 
   if (collection.componentName) {
@@ -99,57 +148,43 @@ function transformCollection(
     return;
   }
 
-  // Add v-for to first item
+  // v-for on the parent item
   $first.attr("v-for", `(item, index) in content.${collectionName}`);
   $first.attr(":key", "index");
 
-  // Replace fields within the collection item
+  // Bind flat fields on the parent item
   Object.entries(collection.fields).forEach(([fieldName, fieldConfig]) => {
-    // Get selector from field config
     const selector = typeof fieldConfig === "string"
       ? fieldConfig
       : (fieldConfig as any).selector || fieldConfig;
     const fieldType = typeof fieldConfig === "object" ? (fieldConfig as any).type : undefined;
-
-    const $fieldEl = $first.find(selector as string);
-    if ($fieldEl.length) {
-      // Determine type from config or field name
-      const isImage = fieldType === "image" || fieldName === "image" || fieldName.includes("image");
-      const isLink = fieldType === "link" || fieldName === "link" || fieldName === "url";
-
-      if (isImage) {
-        // Check if element is img or contains img
-        if ($fieldEl.is("img")) {
-          $fieldEl.attr(":src", `item.${fieldName}`);
-          $fieldEl.removeAttr("src");
-        } else {
-          const $img = $fieldEl.find("img").first();
-          if ($img.length) {
-            $img.attr(":src", `item.${fieldName}`);
-            $img.removeAttr("src");
-          }
-        }
-      } else if (isLink) {
-        // Link uses composite {url, text, newTab} object
-        const $link = $fieldEl.is("a") || $fieldEl.is("NuxtLink") || $fieldEl.is("nuxt-link") ? $fieldEl : $fieldEl.find("a, NuxtLink, nuxt-link").first();
-        if ($link.length) {
-          const isNuxtLink = $link.is("NuxtLink") || $link.is("nuxt-link");
-          $link.attr(isNuxtLink ? ":to" : ":href", `item.${fieldName}?.url`);
-          $link.attr(":target", `item.${fieldName}?.newTab ? '_blank' : undefined`);
-          $link.removeAttr("href");
-          $link.removeAttr("target");
-          $link.removeAttr("to");
-          $link.empty();
-          $link.text(`{{ item.${fieldName}?.text }}`);
-        }
-      } else {
-        $fieldEl.empty();
-        $fieldEl.text(`{{ item.${fieldName} }}`);
-      }
-    }
+    applyFieldBinding($, $first, selector as string, fieldName, fieldType, "item");
   });
 
-  // Remove duplicate items (keep only first as template)
+  // Nested children — each child group gets its own v-for inside the parent
+  if (collection.children) {
+    Object.entries(collection.children).forEach(([childFieldName, childDef]) => {
+      const $childItems = $first.find(childDef.selector);
+      if ($childItems.length === 0) return;
+
+      const $firstChild = $childItems.first();
+      $firstChild.attr("v-for", `(child, ci) in item.${childFieldName}`);
+      $firstChild.attr(":key", "ci");
+
+      Object.entries(childDef.fields).forEach(([fieldName, fieldConfig]) => {
+        const selector = typeof fieldConfig === "string"
+          ? fieldConfig
+          : (fieldConfig as any).selector || fieldConfig;
+        const fieldType = typeof fieldConfig === "object" ? (fieldConfig as any).type : undefined;
+        applyFieldBinding($, $firstChild, selector as string, fieldName, fieldType, "child");
+      });
+
+      // Remove duplicate child items (keep first as template)
+      $childItems.slice(1).remove();
+    });
+  }
+
+  // Remove duplicate parent items (keep first as template)
   $items.slice(1).remove();
 }
 
@@ -231,19 +266,25 @@ export async function transformVueToReactive(
   transformedTemplate = restoreCollectionComponentTags(transformedTemplate);
   transformedTemplate = restoreComponentTags(transformedTemplate, componentNames, perPageComponentNames);
 
-  // Generate new script setup (no pending, just content)
-  const explicitImports = options.target === "astro-vue"
-    ? [
-        `import { useStrapiContent } from '~/src/composables/useStrapiContent';`,
-        ...componentNames.map((name) => `import ${name} from '~/components/${name}.vue';`)
-      ].join("\n")
-    : "";
-
-  const scriptSetup = `<script setup lang="ts">
+  // Generate new script setup
+  let scriptSetup: string;
+  if (options.target === "astro-vue") {
+    // Astro SSR: content arrives as a prop from the Astro page frontmatter.
+    // No composable needed — the Astro page fetches from Strapi server-side.
+    const componentImports = componentNames
+      .map((name) => `import ${name} from '~/components/${name}.vue';`)
+      .join("\n");
+    scriptSetup = `<script setup lang="ts">
+// Auto-generated — content is passed from the Astro page (server-side Strapi fetch)
+${componentImports ? componentImports + "\n" : ""}defineProps<{ content: Record<string, any> }>();
+</script>`;
+  } else {
+    // Nuxt: content is fetched client-side via the auto-imported composable
+    scriptSetup = `<script setup lang="ts">
 // Auto-generated reactive content from Strapi
-${explicitImports}
 const { content } = useStrapiContent('${pageName}');
 </script>`;
+  }
 
   // Single root element - no pending check wrapper
   // Just indent the content properly

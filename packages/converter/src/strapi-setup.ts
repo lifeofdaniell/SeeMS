@@ -106,6 +106,24 @@ async function saveConfig(projectDir: string, config: { apiToken?: string; strap
 
 
 /**
+ * Detect the package manager used in a directory by checking for lockfiles.
+ */
+async function detectPackageManager(dir: string): Promise<"pnpm" | "yarn" | "npm"> {
+  if (await fs.pathExists(path.join(dir, "pnpm-lock.yaml"))) return "pnpm";
+  if (await fs.pathExists(path.join(dir, "yarn.lock"))) return "yarn";
+  return "npm";
+}
+
+/**
+ * Read the Node version from .nvmrc if present.
+ */
+async function readNvmrc(dir: string): Promise<string | null> {
+  const nvmrcPath = path.join(dir, ".nvmrc");
+  if (!(await fs.pathExists(nvmrcPath))) return null;
+  return (await fs.readFile(nvmrcPath, "utf-8")).trim();
+}
+
+/**
  * Main setup function
  * Exported for use by CLI and direct execution
  */
@@ -123,6 +141,12 @@ export async function completeSetup(options: SetupOptions): Promise<void> {
     });
   }
 
+  // Detect package manager and Node version for this Strapi project
+  const pm = await detectPackageManager(strapiDir);
+  const nvmrc = await readNvmrc(strapiDir);
+  const runCmd = `${pm} run develop`;
+  const installCmd = `${pm} install`;
+
   // Load saved config
   const savedConfig = await loadConfig(projectDir);
   const strapiUrl = optionUrl || savedConfig.strapiUrl || "http://localhost:1337";
@@ -139,20 +163,33 @@ export async function completeSetup(options: SetupOptions): Promise<void> {
   await installStrapiBootstrap(projectDir, strapiDir);
   console.log("✓ Bootstrap installed\n");
 
-  // Step 3: Wait for user to restart Strapi
-  console.log("⏸️  Step 3: Restart Strapi to load schemas and bootstrap");
-  console.log("   Run: npm run develop (in Strapi directory)");
-  console.log("   Press Enter when Strapi is running...");
+  // Step 3: Wait for user to start Strapi
+  console.log("⏸️  Step 3: Start Strapi to load schemas and bootstrap");
+  console.log(`   Detected package manager: ${pm}`);
+  if (nvmrc) {
+    console.log(`   Detected .nvmrc: Node ${nvmrc}`);
+    console.log(`   cd ${strapiDir}`);
+    console.log(`   nvm use`);
+    console.log(`   ${installCmd}   # if not already installed`);
+    console.log(`   ${runCmd}`);
+  } else {
+    console.log(`   cd ${strapiDir}`);
+    console.log(`   ${installCmd}   # if not already installed`);
+    console.log(`   ${runCmd}`);
+  }
+  console.log("\n   Wait for \"Server started on port 1337\" then press Enter...");
 
   await waitForEnter();
 
-  // Step 4: Check Strapi is running
+  // Step 4: Wait for Strapi to be reachable (polls every 3s for up to 90s)
   console.log("\n🔍 Step 4: Checking Strapi connection...");
-  const isRunning = await checkStrapiRunning(strapiUrl);
+  const isRunning = await waitForStrapi(strapiUrl);
 
   if (!isRunning) {
-    console.error("❌ Cannot connect to Strapi at", strapiUrl);
-    console.log("   Make sure Strapi is running: npm run develop");
+    console.error(`\n❌ Strapi did not respond at ${strapiUrl} within 90 seconds`);
+    console.log(`   Check for errors in the Strapi terminal`);
+    console.log(`   Then re-run: make setup-strapi`);
+    if (nvmrc) console.log(`   (remember: nvm use  — .nvmrc requires Node ${nvmrc})`);
     process.exit(1);
   }
 
@@ -549,6 +586,32 @@ async function checkStrapiRunning(strapiUrl: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Poll Strapi health endpoint until it responds or timeout is reached.
+ * Shows a progress indicator while waiting.
+ */
+async function waitForStrapi(strapiUrl: string, timeoutMs = 90_000): Promise<boolean> {
+  const interval = 3_000;
+  const deadline = Date.now() + timeoutMs;
+  let dots = 0;
+
+  process.stdout.write("   Waiting for Strapi");
+
+  while (Date.now() < deadline) {
+    const ok = await checkStrapiRunning(strapiUrl);
+    if (ok) {
+      process.stdout.write(" ✓\n");
+      return true;
+    }
+    process.stdout.write(".");
+    dots++;
+    await new Promise(r => setTimeout(r, interval));
+  }
+
+  process.stdout.write("\n");
+  return false;
 }
 
 function createReadline(): readline.Interface {
