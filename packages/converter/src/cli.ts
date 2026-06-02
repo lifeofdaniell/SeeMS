@@ -384,7 +384,7 @@ program
         });
 
         generateContent = await confirm(
-          pc.white("Generate initial CMS content from HTML?")
+          pc.white("Extract seed data now? (skip if you plan to run 'extract collections' next — it regenerates this)")
         );
         enableEditor = await confirm(
           pc.white("Install and wire the inline editor overlay?"),

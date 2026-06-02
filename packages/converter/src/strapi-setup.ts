@@ -163,6 +163,13 @@ export async function completeSetup(options: SetupOptions): Promise<void> {
   await installStrapiBootstrap(projectDir, strapiDir);
   console.log("✓ Bootstrap installed\n");
 
+  // Step 2.5: Clean stray compiled JS and check tsconfig emit safety.
+  // A bare `tsc`/IDE build against a tsconfig without `outDir` emits .js next
+  // to every .ts in src/, which collides with Strapi's loader and breaks
+  // content-type/route registration (every /api write then returns 405).
+  await sweepCompiledTsSiblings(strapiDir);
+  await warnIfTsconfigEmitsIntoSrc(strapiDir);
+
   // Step 3: Wait for user to start Strapi
   console.log("⏸️  Step 3: Start Strapi in a separate terminal tab");
   console.log(`   Detected package manager: ${pm}`);
@@ -482,6 +489,80 @@ async function installStrapiBootstrap(projectDir: string, strapiDir: string): Pr
   console.log(`   ✓ Backup saved to ${path.relative(strapiDir, backupPath)}`);
 }
 
+/**
+ * Remove compiled .js files that sit next to a .ts source in src/.
+ *
+ * A `tsc` run (manual, IDE "build", or CI) against a tsconfig that lacks
+ * `outDir` emits a .js beside every .ts. Strapi's loader then sees both a
+ * .ts and a .js for the same module, fails to resolve content types/routes,
+ * and every /api write returns 405. We only delete `X.js` when `X.ts` exists
+ * in the same directory, so a genuine JavaScript project (whose files have no
+ * .ts sibling) is never touched. `*.example.js` files are always preserved.
+ */
+async function sweepCompiledTsSiblings(strapiDir: string): Promise<void> {
+  const srcDir = path.join(strapiDir, "src");
+  if (!(await fs.pathExists(srcDir))) return;
+
+  const jsFiles = await glob("**/*.js", {
+    cwd: srcDir,
+    absolute: true,
+    ignore: ["**/*.example.js"]
+  });
+
+  let removed = 0;
+  for (const jsFile of jsFiles) {
+    const tsSibling = `${jsFile.slice(0, -3)}.ts`;
+    if (await fs.pathExists(tsSibling)) {
+      await fs.remove(jsFile);
+      removed++;
+    }
+  }
+
+  if (removed > 0) {
+    console.log(
+      `   ✓ Removed ${removed} stale compiled .js file(s) shadowing .ts sources in src/`
+    );
+  }
+}
+
+/**
+ * Warn when the Strapi project's tsconfig will emit compiled .js into src/.
+ *
+ * The root cause of the stray-.js problem is a tsconfig with neither `outDir`
+ * nor `noEmit` (and no `extends` to defer to). We can't reliably resolve
+ * `extends` chains here, so we only warn for the unambiguous case to avoid
+ * false alarms.
+ */
+async function warnIfTsconfigEmitsIntoSrc(strapiDir: string): Promise<void> {
+  const tsconfigPath = path.join(strapiDir, "tsconfig.json");
+  if (!(await fs.pathExists(tsconfigPath))) return;
+
+  try {
+    const raw = await fs.readFile(tsconfigPath, "utf-8");
+    // Strip // and /* */ comments so JSONC tsconfigs parse.
+    const stripped = raw
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/(^|[^:])\/\/.*$/gm, "$1");
+    const config = JSON.parse(stripped);
+    const compilerOptions = config.compilerOptions || {};
+    const hasOutDir =
+      typeof compilerOptions.outDir === "string" && compilerOptions.outDir.trim() !== "";
+    const noEmit = compilerOptions.noEmit === true;
+    const hasExtends = typeof config.extends === "string" && config.extends.trim() !== "";
+
+    if (!hasOutDir && !noEmit && !hasExtends) {
+      console.log("");
+      console.log('   ⚠ Warning: tsconfig.json has no "outDir" and no "noEmit".');
+      console.log("     A stray `tsc` or IDE build will emit compiled .js next to every");
+      console.log("     .ts in src/, which breaks Strapi route registration (405s on seed).");
+      console.log('     Fix: add "compilerOptions": { "outDir": "dist" } to tsconfig.json.');
+      console.log("");
+    }
+  } catch {
+    // Ignore unreadable or malformed tsconfig.
+  }
+}
+
 function mergeBootstrap(existing: string): string | null {
   const helper = renderSeeMSBootstrapHelper();
 
@@ -601,8 +682,11 @@ async function enableSeeMSPublicPermissions(strapi: any) {
  */
 async function checkStrapiRunning(strapiUrl: string): Promise<boolean> {
   try {
-    const response = await fetch(`${strapiUrl}/_health`);
-    return response.ok;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5_000);
+    const response = await fetch(`${strapiUrl}/_health`, { signal: controller.signal });
+    clearTimeout(timeout);
+    return response.ok || response.status === 204;
   } catch {
     return false;
   }
