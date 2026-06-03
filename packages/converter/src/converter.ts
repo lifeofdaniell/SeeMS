@@ -77,7 +77,7 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
     try {
         // Step 0: Analyze input and setup boilerplate
         const analysis = await analyzeWebflowExport(inputDir, config);
-        await setupBoilerplate(boilerplate, outputDir, target);
+        await setupBoilerplate(boilerplate, outputDir, target, editorEnabled);
         await writeSeeMSConfig(outputDir, options.config || {});
         const previousGeneratedState = await loadGeneratedFileState(outputDir);
         const generatedFiles = new Set<string>(getGeneratedRuntimeFiles(target, editorEnabled));

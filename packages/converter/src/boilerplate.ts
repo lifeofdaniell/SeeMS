@@ -11,9 +11,9 @@ import pc from 'picocolors';
  * Check if a string is a GitHub URL
  */
 function isGitHubURL(source: string): boolean {
-  return source.startsWith('https://github.com/') || 
-         source.startsWith('git@github.com:') ||
-         source.includes('github.com');
+  return source.startsWith('https://github.com/') ||
+    source.startsWith('git@github.com:') ||
+    source.includes('github.com');
 }
 
 /**
@@ -21,15 +21,15 @@ function isGitHubURL(source: string): boolean {
  */
 async function cloneFromGitHub(repoUrl: string, outputDir: string): Promise<void> {
   console.log(pc.blue('  Cloning from GitHub...'));
-  
+
   try {
     // Clone the repo
     execSync(`git clone ${repoUrl} ${outputDir}`, { stdio: 'inherit' });
-    
+
     // Remove .git directory to start fresh
     const gitDir = path.join(outputDir, '.git');
     await fs.remove(gitDir);
-    
+
     console.log(pc.green('  ✓ Boilerplate cloned successfully'));
   } catch (error) {
     throw new Error(`Failed to clone repository: ${error instanceof Error ? error.message : String(error)}`);
@@ -41,12 +41,12 @@ async function cloneFromGitHub(repoUrl: string, outputDir: string): Promise<void
  */
 async function copyFromLocal(sourcePath: string, outputDir: string): Promise<void> {
   console.log(pc.blue('  Copying from local path...'));
-  
+
   const sourceExists = await fs.pathExists(sourcePath);
   if (!sourceExists) {
     throw new Error(`Local boilerplate not found: ${sourcePath}`);
   }
-  
+
   // Copy everything except node_modules, .nuxt, .output, .git
   await fs.copy(sourcePath, outputDir, {
     filter: (src) => {
@@ -54,7 +54,7 @@ async function copyFromLocal(sourcePath: string, outputDir: string): Promise<voi
       return !['node_modules', '.nuxt', '.output', '.git', 'dist'].includes(name);
     },
   });
-  
+
   console.log(pc.green('  ✓ Boilerplate copied successfully'));
 }
 
@@ -66,7 +66,8 @@ export type ProjectTarget = 'nuxt' | 'astro-vue';
 export async function setupBoilerplate(
   boilerplateSource: string | undefined,
   outputDir: string,
-  target: ProjectTarget = 'nuxt'
+  target: ProjectTarget = 'nuxt',
+  editorEnabled = false
 ): Promise<void> {
   if (!boilerplateSource) {
     // No boilerplate specified - create minimal structure
@@ -79,16 +80,20 @@ export async function setupBoilerplate(
 
     const configPath = path.join(outputDir, target === 'astro-vue' ? 'astro.config.mjs' : 'nuxt.config.ts');
     const configExists = await fs.pathExists(configPath);
-    
+
     if (!configExists) {
+      // The inline editor generates `prerender = false` API routes
+      // (save/publish), which require a server adapter to build. The SSR'd
+      // pages themselves stay static (build-time Strapi fetch), so the adapter
+      // is only needed when the editor is enabled.
       const basicConfig = target === 'astro-vue'
         ? `import { defineConfig } from 'astro/config';
-import vue from '@astrojs/vue';
+import vue from '@astrojs/vue';${editorEnabled ? `\nimport node from '@astrojs/node';` : ''}
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export default defineConfig({
-  integrations: [vue()],
+${editorEnabled ? `  adapter: node({ mode: 'standalone' }),\n` : ''}  integrations: [vue()],
   vite: {
     resolve: {
       alias: {
@@ -123,7 +128,9 @@ export default defineConfig({
         dependencies: {
           '@astrojs/vue': '^5.0.0',
           astro: '^5.0.0',
-          vue: '^3.5.14'
+          vue: '^3.5.14',
+          // Server adapter required to build the editor's prerender=false API routes.
+          ...(editorEnabled ? { '@astrojs/node': '^9.0.0' } : {})
         },
         devDependencies: {
           '@see-ms/types': '^0.2.0',
@@ -150,7 +157,7 @@ export default defineConfig({
         }
       }, { spaces: 2 });
     }
-    
+
     console.log(pc.green('  ✓ Structure created'));
     return;
   }

@@ -28,7 +28,7 @@ import { writeSeedData, createSeedReadme } from './seed-writer';
 import {
   scanAssets, findHTMLFiles, readHTMLFile,
   writeVueComponent, formatVueFiles,
-  generateBaseLayout, writeAstroPage,
+  generateBaseLayout, writeAstroVuePage,
 } from './filesystem';
 import { getPageRouteInfo, htmlPathToPageId } from './routes';
 import { loadSeeMSConfig, writeSeeMSConfig, normalizeConfig, mergeConfig, minimalConfig } from './config';
@@ -173,8 +173,6 @@ async function regeneratePageFiles(
 
     // Write Vue SFC + Astro wrapper per page
     const vueComponentsDir = path.join(projectDir, 'src', 'components', 'pages');
-    const astroPagesDir   = path.join(projectDir, 'src', 'pages');
-    const layoutPath      = path.join(projectDir, 'src', 'layouts', 'BaseLayout.astro');
 
     for (const { htmlFile, pageName, parsed, transformed } of astroDataMap.values()) {
       // --- Vue SFC (src/components/pages/<name>.vue) ---
@@ -186,43 +184,18 @@ async function regeneratePageFiles(
       await fs.writeFile(vuePath, `<template>\n${transformed}\n</template>\n`, 'utf-8');
 
       // --- Astro wrapper (src/pages/<name>.astro) ---
-      // Fetches from Strapi server-side, passes `content` prop to Vue component.
-      // Vue renders the template SSR — Lenis/GSAP see a fully hydrated DOM.
-      const astroName = htmlFile.replace('.html', '.astro');
-      const astroPath = path.join(astroPagesDir, astroName);
-
-      const relativeLayout = toRelativeImport(
-        path.relative(path.dirname(astroPath), layoutPath)
-      );
-      const relativeVue = toRelativeImport(
-        path.relative(path.dirname(astroPath), vuePath)
-      );
-
-      const pageCollections = Object.keys(manifest?.pages[pageName]?.collections || {});
-      const dataFetch = buildPageDataFetch(pageName, pageCollections);
-
+      // Shared with the converter: server-side Strapi fetch (page + its
+      // collections) + SSR'd Vue page. Keeps extract and convert in lockstep.
       const scripts = pageScriptsMap.get(pageName);
       const uniqueScripts = scripts?.bodyInline.filter(s => !sharedBodyInlineSet.has(s)) ?? [];
-      const pageScriptsSlot = uniqueScripts.length > 0
-        ? `\n  <Fragment slot="page-scripts">\n${uniqueScripts.map(s => `    <script is:inline>${s}</script>`).join('\n')}\n  </Fragment>`
-        : '';
-
-      const safeTitle     = (parsed.title     || '').replace(/"/g, '&quot;');
-      const safeWfPage    = (parsed.wfPage     || '').replace(/"/g, '&quot;');
-      const safeWfSite    = (parsed.wfSite     || '').replace(/"/g, '&quot;');
-      const safeBodyClass = (parsed.bodyClass  || '').replace(/"/g, '&quot;');
-
-      await fs.ensureDir(path.dirname(astroPath));
-      await fs.writeFile(astroPath, `---
-// see-ms:generated
-import BaseLayout from '${relativeLayout}';
-import Page from '${relativeVue}';
-${dataFetch}
----
-<BaseLayout title="${safeTitle}" wfPage="${safeWfPage}" wfSite="${safeWfSite}" bodyClass="${safeBodyClass}">
-  <Page :content="content" />${pageScriptsSlot}
-</BaseLayout>
-`, 'utf-8');
+      const pageCollections = Object.keys(manifest?.pages[pageName]?.collections || {});
+      await writeAstroVuePage(projectDir, htmlFile, pageName, {
+        title: parsed.title,
+        wfPage: parsed.wfPage,
+        wfSite: parsed.wfSite,
+        bodyClass: parsed.bodyClass,
+        uniqueBodyInlineScripts: uniqueScripts,
+      }, editorEnabled, pageCollections);
     }
   } else {
     for (const htmlFile of htmlFiles) {
@@ -268,39 +241,7 @@ async function regenerateSchemasAndSeed(
   console.log(pc.green(`  ✓ Seed data extracted from ${pagesWithContent} pages`));
 }
 
-function toRelativeImport(p: string): string {
-  const normalized = p.split(path.sep).join('/');
-  return normalized.startsWith('.') ? normalized : `./${normalized}`;
-}
 
-/**
- * Build a Strapi data-fetch block for an Astro page frontmatter.
- * Always fetches the page single-type; also fetches each collection-type.
- */
-function buildPageDataFetch(pageName: string, collectionNames: string[]): string {
-  const lines: string[] = [
-    `const _strapiUrl = import.meta.env.PUBLIC_STRAPI_URL || 'http://localhost:1337';`,
-    `let content: Record<string, any> = {};`,
-    `try {`,
-    `  const _pageRes = await fetch(\`\${_strapiUrl}/api/${pageName}?populate=*\`);`,
-    `  if (_pageRes.ok) {`,
-    `    const _pageJson = await _pageRes.json();`,
-    `    content = _pageJson?.data || _pageJson || {};`,
-    `  }`,
-  ];
-  for (const collName of collectionNames) {
-    const v = `_${collName.replace(/[^a-zA-Z0-9]/g, '_')}`;
-    lines.push(
-      `  const ${v}Res = await fetch(\`\${_strapiUrl}/api/${collName}?populate=*\`);`,
-      `  if (${v}Res.ok) {`,
-      `    const ${v}Json = await ${v}Res.json();`,
-      `    content.${collName} = ${v}Json?.data || ${v}Json || [];`,
-      `  }`
-    );
-  }
-  lines.push(`} catch (_e) { /* Strapi unavailable — renders with empty content */ }`);
-  return lines.join('\n');
-}
 
 function toComponentName(name: string): string {
   return name

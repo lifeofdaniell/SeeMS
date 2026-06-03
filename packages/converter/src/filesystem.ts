@@ -390,7 +390,8 @@ export async function writeAstroVuePage(
     bodyClass?: string;
     uniqueBodyInlineScripts?: string[];
   } = {},
-  editorEnabled = false
+  editorEnabled = false,
+  collectionNames: string[] = []
 ): Promise<void> {
   const astroPagesDir = path.join(outputDir, 'src', 'pages');
   const componentDir = path.join(outputDir, 'src', 'components', 'pages');
@@ -418,6 +419,17 @@ export async function writeAstroVuePage(
     ? `\n<script>\n  import '${relativeEditorImport}';\n</script>\n`
     : '';
 
+  // Fetch each collection the page renders and attach it under content[<name>]
+  // so the Vue component can v-for over content.<collection>.
+  const collectionFetches = collectionNames.map((name) => {
+    const v = `_${name.replace(/[^a-zA-Z0-9]/g, '_')}`;
+    return `  const ${v}Res = await fetch(\`\${strapiUrl}/api/${name}?populate=*\`);
+  if (${v}Res.ok) {
+    const ${v}Json = await ${v}Res.json();
+    content['${name}'] = ${v}Json?.data ?? [];
+  }`;
+  }).join('\n');
+
   await fs.ensureDir(path.dirname(astroPath));
   await fs.writeFile(astroPath, `---
 // see-ms:generated
@@ -431,7 +443,7 @@ try {
   if (response.ok) {
     const json = await response.json();
     content = json?.data?.attributes ?? json?.data ?? {};
-  }
+  }${collectionFetches ? '\n' + collectionFetches : ''}
 } catch (error) {
   console.warn('[SeeMS] Could not fetch Strapi content for "${pageName}":', error instanceof Error ? error.message : error);
 }
