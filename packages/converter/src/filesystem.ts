@@ -368,6 +368,81 @@ ${htmlBody}${pageScriptsSlot}
 }
 
 /**
+ * Write an Astro page that server-renders the page's content-bound Vue
+ * component, fetching its content from Strapi at render time.
+ *
+ * The `.vue` (written by writeVueComponent) holds the markup + `{{ content.* }}`
+ * bindings; here we fetch `/api/<pageName>` server-side and pass the result as
+ * the `content` prop. The component is rendered WITHOUT a client directive, so
+ * Astro server-renders it to static HTML — the DOM is present at load for the
+ * Webflow/gsap scripts, and the editor overlay (preview mode) edits that same
+ * DOM by selector. If Strapi is unreachable the page still renders (empty
+ * content) instead of failing the build.
+ */
+export async function writeAstroVuePage(
+  outputDir: string,
+  fileName: string,
+  pageName: string,
+  pageOptions: {
+    title?: string;
+    wfPage?: string;
+    wfSite?: string;
+    bodyClass?: string;
+    uniqueBodyInlineScripts?: string[];
+  } = {},
+  editorEnabled = false
+): Promise<void> {
+  const astroPagesDir = path.join(outputDir, 'src', 'pages');
+  const componentDir = path.join(outputDir, 'src', 'components', 'pages');
+  const astroName = fileName.replace('.html', '.astro');
+  const vueName = fileName.replace('.html', '.vue');
+  const astroPath = path.join(astroPagesDir, astroName);
+  const vuePath = path.join(componentDir, vueName);
+  const layoutPath = path.join(outputDir, 'src', 'layouts', 'BaseLayout.astro');
+  const editorPath = path.join(outputDir, 'src', 'cms-editor');
+
+  const relativeLayoutImport = ensureRelativeImport(path.relative(path.dirname(astroPath), layoutPath));
+  const relativeVueImport = ensureRelativeImport(path.relative(path.dirname(astroPath), vuePath));
+  const relativeEditorImport = ensureRelativeImport(path.relative(path.dirname(astroPath), editorPath));
+
+  const { title = '', wfPage = '', wfSite = '', bodyClass = '', uniqueBodyInlineScripts = [] } = pageOptions;
+  const safeTitle = title.replace(/"/g, '&quot;');
+  const safeWfPage = wfPage.replace(/"/g, '&quot;');
+  const safeWfSite = wfSite.replace(/"/g, '&quot;');
+  const safeBodyClass = bodyClass.replace(/"/g, '&quot;');
+
+  const pageScriptsSlot = uniqueBodyInlineScripts.length > 0
+    ? `\n  <Fragment slot="page-scripts">\n${uniqueBodyInlineScripts.map(s => `    <script is:inline>${s}</script>`).join('\n')}\n  </Fragment>`
+    : '';
+  const editorScript = editorEnabled
+    ? `\n<script>\n  import '${relativeEditorImport}';\n</script>\n`
+    : '';
+
+  await fs.ensureDir(path.dirname(astroPath));
+  await fs.writeFile(astroPath, `---
+// see-ms:generated
+import BaseLayout from '${relativeLayoutImport}';
+import Page from '${relativeVueImport}';
+
+const strapiUrl = import.meta.env.PUBLIC_STRAPI_URL || 'http://localhost:1337';
+let content: Record<string, any> = {};
+try {
+  const response = await fetch(\`\${strapiUrl}/api/${pageName}?populate=*\`);
+  if (response.ok) {
+    const json = await response.json();
+    content = json?.data?.attributes ?? json?.data ?? {};
+  }
+} catch (error) {
+  console.warn('[SeeMS] Could not fetch Strapi content for "${pageName}":', error instanceof Error ? error.message : error);
+}
+---
+<BaseLayout title="${safeTitle}" wfPage="${safeWfPage}" wfSite="${safeWfSite}" bodyClass="${safeBodyClass}">
+  <Page content={content} />${pageScriptsSlot}
+</BaseLayout>${editorScript}
+`, 'utf-8');
+}
+
+/**
  * Format Vue files with Prettier
  */
 export async function formatVueFiles(outputDir: string, target: ProjectTarget = 'nuxt'): Promise<void> {

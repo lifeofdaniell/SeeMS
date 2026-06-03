@@ -11,7 +11,7 @@ import {
     writeVueComponent,
     formatVueFiles,
     generateBaseLayout,
-    writeAstroPage,
+    writeAstroVuePage,
 } from './filesystem';
 import { parseHTML, transformForNuxt, htmlToVueComponent, deduplicateStyles, extractPageScripts } from './parser';
 import type { ParsedPage, PageScripts } from './parser';
@@ -266,16 +266,16 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
             });
             console.log(pc.green('  ✓ Generated src/layouts/BaseLayout.astro'));
 
-            for (const { htmlFile, pageName, parsed, transformed } of astroPageDataMap.values()) {
+            for (const { htmlFile, pageName, parsed } of astroPageDataMap.values()) {
                 const scripts = pageScriptsMap.get(pageName);
                 const uniqueScripts = scripts?.bodyInline.filter(s => !sharedBodyInlineSet.has(s)) ?? [];
-                await writeAstroPage(outputDir, htmlFile, transformed, {
+                await writeAstroVuePage(outputDir, htmlFile, pageName, {
                     title: parsed.title,
                     wfPage: parsed.wfPage,
                     wfSite: parsed.wfSite,
                     bodyClass: parsed.bodyClass,
                     uniqueBodyInlineScripts: uniqueScripts,
-                });
+                }, editorEnabled);
                 console.log(pc.green(`  ✓ Created ${htmlFile.replace('.html', '.astro')}`));
             }
         }

@@ -22,7 +22,9 @@ export const LINK_COMPONENT_SCHEMA = {
             required: true
         },
         text: {
-            type: 'string' as const,
+            // Anchor text is unbounded (can wrap a sentence/blurb), so use a
+            // SQL text column — `string` (varchar(255)) overflows on long links.
+            type: 'text' as const,
             required: true
         },
         newTab: {
