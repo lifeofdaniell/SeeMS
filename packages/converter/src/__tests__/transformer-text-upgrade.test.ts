@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { upgradeLongStringFieldsToText } from "../transformer";
+import { upgradeLongStringFieldsToText, LINK_COMPONENT_SCHEMA } from "../transformer";
 
 const long = "x".repeat(300);
 const short = "hello";
@@ -78,5 +78,13 @@ describe("upgradeLongStringFieldsToText", () => {
     const count = upgradeLongStringFieldsToText(contentTypes, {});
     expect(count).toBe(0);
     expect(contentTypes.page.attributes.s.type).toBe("string");
+  });
+});
+
+describe("shared.link component", () => {
+  it("types anchor text as `text`, not varchar(255)-bound `string`", () => {
+    // Link text can be a full sentence/blurb (e.g. news-card links); a `string`
+    // column overflows Postgres varchar(255) and fails seeding with a 500.
+    expect(LINK_COMPONENT_SCHEMA.attributes.text.type).toBe("text");
   });
 });
