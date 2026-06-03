@@ -26,6 +26,7 @@ interface SetupOptions {
   ignoreSavedToken?: boolean;
   scaffold?: boolean;
   scaffoldOptions?: StrapiScaffoldOptions;
+  seedOptions?: SeedOptions;
 }
 
 export interface StrapiScaffoldOptions {
@@ -238,7 +239,7 @@ export async function completeSetup(options: SetupOptions): Promise<void> {
 
   // Step 7: Seed content
   console.log("📝 Step 7: Seeding content...");
-  await seedContent(projectDir, strapiUrl, token, mediaMap);
+  await seedContent(projectDir, strapiUrl, token, mediaMap, options.seedOptions);
   console.log("✓ Content seeded\n");
 
   console.log("✅ Complete setup finished!");
@@ -933,11 +934,41 @@ function getMimeType(fileName: string): string {
 /**
  * Seed all content from seed-data.json
  */
+export interface SeedOptions {
+  /** Seed only these content types (by seed key). */
+  only?: string[];
+  /** Clear these collections before seeding (clean slate). */
+  fresh?: string[];
+  /** Skip content types that already have data (preserve admin work). */
+  skipExisting?: boolean;
+}
+
+async function hasExistingData(
+  route: string,
+  isCollection: boolean,
+  strapiUrl: string,
+  apiToken: string
+): Promise<boolean> {
+  const headers = { Authorization: `Bearer ${apiToken}` };
+  try {
+    const url = isCollection
+      ? `${strapiUrl}/api/${route}?pagination[pageSize]=1&status=draft`
+      : `${strapiUrl}/api/${route}?status=draft`;
+    const res = await fetch(url, { headers });
+    if (!res.ok) return false;
+    const json: any = await res.json();
+    return isCollection ? (Array.isArray(json?.data) && json.data.length > 0) : json?.data != null;
+  } catch {
+    return false;
+  }
+}
+
 async function seedContent(
   projectDir: string,
   strapiUrl: string,
   apiToken: string,
-  mediaMap: Map<string, number>
+  mediaMap: Map<string, number>,
+  options: SeedOptions = {}
 ): Promise<void> {
   const seedPath = seedDataPath(projectDir);
 
@@ -969,27 +1000,43 @@ async function seedContent(
       continue;
     }
 
+    // --only: restrict to the named content types.
+    if (options.only && options.only.length > 0 && !options.only.includes(contentType)) {
+      continue;
+    }
+
     const singularName = schema.info.singularName;
     const pluralName = schema.info.pluralName;
+    const isFresh = options.fresh?.includes(contentType) || options.fresh?.includes("all");
 
     // Check if it's a collection (array) or single type (object)
     if (Array.isArray(data)) {
-      // Collection type - use pluralName
-      console.log(`   Seeding ${contentType} (${data.length} items)...`);
+      // --skip-existing: leave already-populated collections untouched.
+      if (options.skipExisting && !isFresh && await hasExistingData(pluralName, true, strapiUrl, apiToken)) {
+        console.log(`   ↪︎ Skipping ${contentType} (already has data)`);
+        continue;
+      }
+      // --fresh: wipe the collection before reseeding.
+      if (isFresh) {
+        const removed = await clearCollection(pluralName, strapiUrl, apiToken);
+        console.log(`   ⟳ Cleared ${contentType} (${removed} removed)`);
+      }
 
+      console.log(`   Seeding ${contentType} (${data.length} items)...`);
       for (const item of data) {
         totalCount++;
         const processedItem = processMediaFields(item, mediaMap);
-        const success = await createEntry(
-          pluralName,
-          processedItem,
-          strapiUrl,
-          apiToken
-        );
+        // Upsert by seemsKey → re-seeding updates in place, never duplicates.
+        const success = await upsertEntry(pluralName, processedItem, strapiUrl, apiToken);
         if (success) successCount++;
       }
     } else {
-      // Single type - use singularName
+      // --skip-existing: don't overwrite a single type that's already been edited.
+      if (options.skipExisting && !isFresh && await hasExistingData(singularName, false, strapiUrl, apiToken)) {
+        console.log(`   ↪︎ Skipping ${contentType} (already has data)`);
+        continue;
+      }
+
       console.log(`   Seeding ${contentType}...`);
       totalCount++;
       const processedData = processMediaFields(data, mediaMap);
@@ -1093,6 +1140,104 @@ async function createEntry(
 /**
  * Create or update a single type entry
  */
+/**
+ * Find an existing collection entry by its stable `seemsKey`.
+ * Checks published first, then draft, so it works regardless of publish state.
+ * Returns the entry's documentId (Strapi 5) / id, or undefined if not found.
+ */
+async function findEntryByKey(
+  pluralName: string,
+  key: string,
+  strapiUrl: string,
+  apiToken: string
+): Promise<string | number | undefined> {
+  const headers = { Authorization: `Bearer ${apiToken}` };
+  const base = `${strapiUrl}/api/${pluralName}?filters[seemsKey][$eq]=${encodeURIComponent(key)}&pagination[pageSize]=1`;
+  for (const url of [base, `${base}&status=draft`]) {
+    try {
+      const res = await fetch(url, { headers });
+      if (!res.ok) continue;
+      const json: any = await res.json();
+      const entry = Array.isArray(json?.data) ? json.data[0] : undefined;
+      const documentId = entry?.documentId ?? entry?.id;
+      if (documentId) return documentId;
+    } catch {
+      // try next
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Upsert a collection entry keyed by `seemsKey` so re-seeding updates items in
+ * place instead of duplicating them. Falls back to a plain create when the seed
+ * item has no key (older seed data).
+ */
+async function upsertEntry(
+  pluralName: string,
+  data: any,
+  strapiUrl: string,
+  apiToken: string
+): Promise<boolean> {
+  const key = data?.seemsKey;
+  if (!key) return createEntry(pluralName, data, strapiUrl, apiToken);
+
+  const documentId = await findEntryByKey(pluralName, String(key), strapiUrl, apiToken);
+  if (!documentId) return createEntry(pluralName, data, strapiUrl, apiToken);
+
+  try {
+    const response = await fetch(`${strapiUrl}/api/${pluralName}/${documentId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiToken}` },
+      body: JSON.stringify({ data })
+    });
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`   ✗ Failed to update ${pluralName} [${key}]: ${response.status} - ${errorText}`);
+      return false;
+    }
+    return true;
+  } catch (error) {
+    console.error(`   ✗ Error updating ${pluralName} [${key}]:`, error);
+    return false;
+  }
+}
+
+/**
+ * Delete every entry in a collection (used by --fresh): clears it for a clean reseed.
+ */
+async function clearCollection(
+  pluralName: string,
+  strapiUrl: string,
+  apiToken: string
+): Promise<number> {
+  const headers = { Authorization: `Bearer ${apiToken}` };
+  let deleted = 0;
+  try {
+    // Page through draft state so we catch unpublished entries too.
+    while (true) {
+      const res = await fetch(
+        `${strapiUrl}/api/${pluralName}?pagination[pageSize]=100&status=draft`,
+        { headers }
+      );
+      if (!res.ok) break;
+      const json: any = await res.json();
+      const entries: any[] = Array.isArray(json?.data) ? json.data : [];
+      if (entries.length === 0) break;
+      for (const entry of entries) {
+        const documentId = entry?.documentId ?? entry?.id;
+        if (documentId == null) continue;
+        const del = await fetch(`${strapiUrl}/api/${pluralName}/${documentId}`, { method: "DELETE", headers });
+        if (del.ok) deleted++;
+      }
+      if (entries.length < 100) break;
+    }
+  } catch {
+    // best effort
+  }
+  return deleted;
+}
+
 async function createOrUpdateSingleType(
   contentType: string,
   data: any,

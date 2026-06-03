@@ -231,6 +231,17 @@ function collectionToStrapiSchema(
     const attributes = buildAttributes(collection.fields);
     const componentSchemas: Record<string, any> = {};
 
+    // Stable per-item identity for idempotent re-seeding: the seeder upserts by
+    // this instead of blindly POSTing (which would duplicate on every re-seed).
+    // Hidden in the admin UI but still queryable via REST filters.
+    attributes.seemsKey = {
+        type: 'string',
+        pluginOptions: {
+            'content-manager': { visible: false },
+            'content-type-builder': { visible: false },
+        },
+    } as any;
+
     // Nested children → Strapi repeatable component fields
     if (collection.children) {
         for (const [childFieldName, childDef] of Object.entries<any>(collection.children)) {

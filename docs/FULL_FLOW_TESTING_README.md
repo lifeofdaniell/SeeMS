@@ -396,6 +396,11 @@ Options:
 - `--scaffold`: Create the Strapi project if `strapi-dir` does not exist.
 - `--package-manager <manager>`: Package manager for scaffolding.
 - `--no-install`: Scaffold without dependency install.
+- `--only <types>`: Seed only these content types (comma-separated seed keys), e.g. `--only news,faqs`. Useful after re-extracting to seed just a newly-added collection.
+- `--fresh <types>`: Clear these collections before seeding (comma-separated, or `all`). Wipes the collection's entries, then reseeds clean.
+- `--skip-existing`: Skip content types that already have data, so admin edits and existing entries are preserved (only brand-new/empty types are seeded).
+
+Re-seeding is idempotent: collection items carry a stable `seemsKey`, so re-running upserts (updates in place) instead of duplicating. See "Re-seeding and the iterative workflow" below.
 
 What it does:
 
@@ -409,7 +414,7 @@ What it does:
 8. Uses a provided, saved, or prompted API token.
 9. Uploads images from `public/assets/images`.
 10. Seeds single types with `PUT /api/<type>`.
-11. Seeds collection types with `POST /api/<plural-type>`.
+11. Seeds collection types by upserting on `seemsKey` (`PUT` existing / `POST` new), so re-seeds don't duplicate.
 
 Expected output:
 
@@ -419,6 +424,32 @@ Expected output:
 - Media uploaded to Strapi
 - Seeded content entries
 - Optional saved `STRAPI_URL` and `STRAPI_API_TOKEN` in the converted project `.env`
+
+#### Re-seeding and the iterative workflow
+
+You don't have to model everything up front. Convert a few collections/components, seed, wire and review the site, then turn more sections into collections later and re-seed — without duplicating data or losing edits.
+
+How it stays safe:
+
+- Each collection item is stamped with a deterministic `seemsKey` (e.g. `news_cards-0`), and a hidden `seemsKey` field is added to every collection schema.
+- On re-seed, collections **upsert** by `seemsKey` (update in place / create only new items). Single types `PUT` (overwrite) unless `--skip-existing`.
+- Items you add by hand in the Strapi admin have no matching `seemsKey`, so they're never touched.
+
+Typical loop:
+
+```bash
+# 1. First pass: convert a few collections, then seed
+cms setup-strapi ./site ./strapi-app
+
+# 2. Later: turn more sections into collections, regenerate, restart Strapi to migrate, reseed
+cms extract collections ./site
+cms setup-strapi ./site ./strapi-app                 # upsert: existing updated, new created, no duplicates
+cms setup-strapi ./site ./strapi-app --only news     # or seed just the new collection
+cms setup-strapi ./site ./strapi-app --skip-existing # or preserve everything already populated
+cms setup-strapi ./site ./strapi-app --fresh news    # or wipe + reseed one collection clean
+```
+
+Migration note (one-time): `seemsKey` is a new schema field. The first time you re-seed an existing project after upgrading, **restart Strapi after schemas are reinstalled** so the `seemsKey` column is created. Data seeded *before* `seemsKey` existed has no key, so the first upsert can't match it — run that first re-seed with `--fresh all` (or start from a clean DB) to establish keyed items. Subsequent re-seeds are fully idempotent.
 
 ### `cms generate [manifest]`
 

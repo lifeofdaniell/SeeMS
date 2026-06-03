@@ -633,6 +633,9 @@ program
   .option("--scaffold", "Create the Strapi project if the target directory does not exist")
   .option("--package-manager <manager>", "Package manager for scaffolding (npm|pnpm|yarn)", "npm")
   .option("--no-install", "Scaffold without installing dependencies")
+  .option("--only <types>", "Seed only these content types (comma-separated)")
+  .option("--fresh <types>", "Clear these collections before seeding (comma-separated, or 'all')")
+  .option("--skip-existing", "Skip content types that already have data (preserve admin edits)")
   .action(async (projectDir, strapiDir, options) => {
     try {
       if (!projectDir) {
@@ -651,6 +654,9 @@ program
         true
       ));
 
+      const parseList = (value?: string): string[] | undefined =>
+        value ? value.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
+
       await completeSetup({
         projectDir,
         strapiDir,
@@ -665,6 +671,11 @@ program
           run: false,
           gitInit: false,
           typescript: true
+        },
+        seedOptions: {
+          only: parseList(options.only),
+          fresh: parseList(options.fresh),
+          skipExisting: Boolean(options.skipExisting)
         }
       });
     } catch (error) {

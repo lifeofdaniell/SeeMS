@@ -234,7 +234,7 @@ export function formatForStrapi(extracted: ExtractedContent): Record<string, any
 
         // Format collection types
         for (const [collectionName, items] of Object.entries(content.collections)) {
-            const formattedItems = items.map(item => {
+            const formattedItems = items.map((item, index) => {
                 const formattedItem: Record<string, any> = {};
 
                 for (const [fieldName, value] of Object.entries(item)) {
@@ -248,6 +248,9 @@ export function formatForStrapi(extracted: ExtractedContent): Record<string, any
                         formattedItem[fieldName] = value;
                     }
                 }
+
+                // Deterministic identity so re-seeding upserts instead of duplicating.
+                formattedItem.seemsKey = `${collectionName}-${index}`;
 
                 return formattedItem;
             });
