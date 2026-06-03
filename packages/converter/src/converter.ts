@@ -34,7 +34,7 @@ import {
     createStrapiBootstrap
 } from './editor-integration';
 import { setupBoilerplate } from './boilerplate';
-import { generateManifest, writeManifest } from './manifest';
+import { generateManifest, generateManifestFromHtmlMap, writeManifest } from './manifest';
 import { transformAllVuePages, transformSharedComponentsToReactive } from './vue-transformer';
 import { manifestToSchemas, getLinkComponentSchema, upgradeLongStringFieldsToText } from './transformer';
 import { writeAllSchemas, writeAllComponentSchemas, clearGeneratedSchemas, createStrapiReadme, writeLinkComponentSchema } from './schema-writer';
@@ -222,6 +222,7 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
         }
 
         // For astro-vue: deduplicate scripts, generate BaseLayout, write .astro pages
+        let sharedBodyInlineSet = new Set<string>();
         if (target === 'astro-vue') {
             // Count occurrences of each body inline script across all pages
             const inlineScriptCounts = new Map<string, number>();
@@ -235,7 +236,7 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
                 }
             }
 
-            const sharedBodyInlineSet = new Set(
+            sharedBodyInlineSet = new Set(
                 Array.from(inlineScriptCounts.entries())
                     .filter(([, count]) => count > 1)
                     .map(([content]) => content)
@@ -294,7 +295,7 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
                 return [info.pageId, info.route];
             })
         );
-        const manifest = await generateManifest(pagesDir, {
+        const manifestOptions = {
             collectionClasses,
             collectionNames,
             sharedComponents,
@@ -303,8 +304,35 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
             ignoreClasses: config.ignore?.classes,
             provider,
             pageRoutes,
-        });
+        };
+        // astro-vue pages are SSR'd Vue components — the .astro files carry no
+        // detectable markup (it lives in the .vue + Strapi). Detect fields from
+        // the in-memory page HTML instead (same source the seed extracts from),
+        // rather than re-reading the written page files.
+        const manifest = target === 'astro-vue'
+            ? await generateManifestFromHtmlMap(originalHtmlContentMap, pageRoutes, manifestOptions)
+            : await generateManifest(pagesDir, manifestOptions);
         await writeManifest(outputDir, manifest);
+
+        // astro-vue: the .astro pages were written before the manifest existed,
+        // so per-page collections weren't known yet. Now rewrite the pages that
+        // have collections so their .astro fetches the collection data into
+        // content.<name> — the .vue already v-for's over it.
+        if (target === 'astro-vue') {
+            for (const { htmlFile, pageName, parsed } of astroPageDataMap.values()) {
+                const pageCollections = Object.keys(manifest.pages[pageName]?.collections || {});
+                if (pageCollections.length === 0) continue;
+                const scripts = pageScriptsMap.get(pageName);
+                const uniqueScripts = scripts?.bodyInline.filter(s => !sharedBodyInlineSet.has(s)) ?? [];
+                await writeAstroVuePage(outputDir, htmlFile, pageName, {
+                    title: parsed.title,
+                    wfPage: parsed.wfPage,
+                    wfSite: parsed.wfSite,
+                    bodyClass: parsed.bodyClass,
+                    uniqueBodyInlineScripts: uniqueScripts,
+                }, editorEnabled, pageCollections);
+            }
+        }
 
         const totalFields = Object.values(manifest.pages).reduce(
             (sum, page) => sum + Object.keys(page.fields || {}).length,

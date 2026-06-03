@@ -423,7 +423,11 @@ export async function writeAstroVuePage(
   // so the Vue component can v-for over content.<collection>.
   const collectionFetches = collectionNames.map((name) => {
     const v = `_${name.replace(/[^a-zA-Z0-9]/g, '_')}`;
-    return `  const ${v}Res = await fetch(\`\${strapiUrl}/api/${name}?populate=*\`);
+    // Strapi's collection REST route is the kebab-case pluralName, which the
+    // schema generator derives from the manifest key by `_` → `-`. The Vue
+    // template still binds the underscore key, so fetch by route, store by key.
+    const route = name.replace(/_/g, '-');
+    return `  const ${v}Res = await fetch(\`\${strapiUrl}/api/${route}?populate=*\`);
   if (${v}Res.ok) {
     const ${v}Json = await ${v}Res.json();
     content['${name}'] = ${v}Json?.data ?? [];
