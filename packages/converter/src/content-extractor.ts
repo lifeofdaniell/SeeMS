@@ -43,6 +43,23 @@ function extractLinkValue($element: cheerio.Cheerio<any>): LinkFieldValue {
 }
 
 /**
+ * Extract the text value for a non-media / non-link field.
+ *
+ * `rich` fields keep their full inner text (formatting children are part of the
+ * value). Everything else (plain leaf fields) takes only the element's *direct*
+ * text: if a selector ever resolves to a container, this prevents slurping the
+ * whole subtree into one field — the failure mode that produced multi-kilobyte
+ * blobs and overflowed Postgres `varchar(255)`. Whitespace is collapsed so
+ * multi-line source markup doesn't yield ragged values.
+ */
+function extractFieldText($element: cheerio.Cheerio<any>, fieldType?: string): string {
+    const raw = fieldType === 'rich'
+        ? $element.text()
+        : $element.clone().children().remove().end().text();
+    return raw.replace(/\s+/g, ' ').trim();
+}
+
+/**
  * Extract content from HTML based on manifest selectors
  */
 export function extractContentFromHTML(
@@ -77,9 +94,8 @@ export function extractContentFromHTML(
                         content.fields[fieldName] = extractLinkValue(linkElement);
                     }
                 } else {
-                    // Extract text content
-                    const text = element.text().trim();
-                    content.fields[fieldName] = text;
+                    // Extract text content (direct text only for plain fields)
+                    content.fields[fieldName] = extractFieldText(element, field.type);
                 }
             }
         }
@@ -119,9 +135,8 @@ export function extractContentFromHTML(
                                 item[fieldName] = extractLinkValue(linkElement);
                             }
                         } else {
-                            // Extract text
-                            const text = fieldElement.text().trim();
-                            item[fieldName] = text;
+                            // Extract text (direct text only for plain fields)
+                            item[fieldName] = extractFieldText(fieldElement, fieldType);
                         }
                     }
                 }

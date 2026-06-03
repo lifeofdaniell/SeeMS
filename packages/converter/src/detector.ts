@@ -197,7 +197,7 @@ function shouldIgnoreElement(
  * - <div><span>Test</span></div> → false (has child element)
  * - <p>Hello <strong>world</strong></p> → false (has child element)
  */
-function isEditableLeaf($el: cheerio.Cheerio<any>): boolean {
+export function isEditableLeaf($el: cheerio.Cheerio<any>): boolean {
     // Must have ZERO child ELEMENTS (no nested HTML tags)
     if ($el.children().length > 0) {
         return false;
@@ -284,7 +284,7 @@ function generateFieldName(
  * Tries multiple strategies and VALIDATES uniqueness for each
  * Falls back to full path from root if nothing else works
  */
-function buildUniqueSelector($: cheerio.CheerioAPI, $el: cheerio.Cheerio<any>): string {
+export function buildUniqueSelector($: cheerio.CheerioAPI, $el: cheerio.Cheerio<any>): string {
     const tag = ($el.prop('tagName') || 'div').toLowerCase();
 
     // Strategy 1: ID is always unique
@@ -330,11 +330,22 @@ function buildUniqueSelector($: cheerio.CheerioAPI, $el: cheerio.Cheerio<any>): 
 }
 
 /**
- * Build a full path selector from root to element
- * This is GUARANTEED to be unique
+ * Build a positional path selector for an element.
+ *
+ * Climbs from the element toward <body>, adding `:nth-of-type` wherever there
+ * are same-tag siblings, and returns as soon as the accumulated descendant path
+ * resolves to exactly one element in the document. This guarantees uniqueness
+ * (verified, not assumed) while keeping the selector as short as possible. If
+ * the element is somehow unreachable to uniqueness, it returns the fullest path
+ * built up to <body>.
+ *
+ * The previous implementation hard-stopped at 4 levels and never verified the
+ * result, so deeply-nested Webflow markup with reused classes produced ambiguous
+ * paths that matched many elements — at extraction time `$(selector).first()`
+ * then landed on a wrong/container element and slurped its whole subtree.
  */
-function buildFullPath(_$: cheerio.CheerioAPI, $el: cheerio.Cheerio<any>): string {
-    const parts: string[] = [];
+export function buildFullPath($: cheerio.CheerioAPI, $el: cheerio.Cheerio<any>): string {
+    const segments: string[] = [];
     let current = $el;
 
     while (current.length && current.prop('tagName')) {
@@ -344,26 +355,30 @@ function buildFullPath(_$: cheerio.CheerioAPI, $el: cheerio.Cheerio<any>): strin
         const $parent = current.parent();
         const $siblings = $parent.children(tag);
 
-        let part = tag;
+        let segment = tag;
         if ($siblings.length > 1) {
             const index = $siblings.index(current) + 1;
-            part = `${tag}:nth-of-type(${index})`;
+            segment = `${tag}:nth-of-type(${index})`;
         }
 
-        parts.unshift(part);
-        current = $parent;
+        segments.unshift(segment);
 
-        // Stop if we have enough specificity (3-4 levels is usually enough)
-        if (parts.length >= 4) break;
+        // Stop as soon as the accumulated path uniquely identifies the element.
+        const candidate = segments.join(' > ');
+        if ($(candidate).length === 1) {
+            return candidate;
+        }
+
+        current = $parent;
     }
 
-    return parts.join(' > ');
+    return segments.join(' > ');
 }
 
 /**
  * Determine field type from element and content
  */
-function determineFieldType($el: cheerio.Cheerio<any>, tagName: string): FieldType {
+export function determineFieldType($el: cheerio.Cheerio<any>, tagName: string): FieldType {
     // Check data-cms-type attribute first
     const dataCmsType = $el.attr('data-cms-type') as FieldType | undefined;
     if (dataCmsType) return dataCmsType;

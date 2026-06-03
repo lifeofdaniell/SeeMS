@@ -1,5 +1,5 @@
 CLI := node packages/converter/dist/cli.mjs
-DIR ?= ./convert
+DIR ?= ../qzam
 SRC ?= ~/Downloads/quantum-zenith----asset-management.webflow
 
 default: help

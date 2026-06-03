@@ -36,7 +36,7 @@ import {
 import { setupBoilerplate } from './boilerplate';
 import { generateManifest, writeManifest } from './manifest';
 import { transformAllVuePages, transformSharedComponentsToReactive } from './vue-transformer';
-import { manifestToSchemas, getLinkComponentSchema } from './transformer';
+import { manifestToSchemas, getLinkComponentSchema, upgradeLongStringFieldsToText } from './transformer';
 import { writeAllSchemas, writeAllComponentSchemas, clearGeneratedSchemas, createStrapiReadme, writeLinkComponentSchema } from './schema-writer';
 import { extractAllContent, formatForStrapi } from './content-extractor';
 import { writeSeedData, createSeedReadme } from './seed-writer';
@@ -370,6 +370,12 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
         console.log(pc.blue('\n📋 Generating Strapi schemas...'));
         await clearGeneratedSchemas(outputDir);
         const { contentTypes, componentSchemas } = manifestToSchemas(manifest);
+        // Promote string fields to text where seed content would overflow
+        // varchar(255), so Postgres can store long copy without a 500 on seed.
+        const promoted = upgradeLongStringFieldsToText(contentTypes, seedData);
+        if (promoted > 0) {
+            console.log(pc.dim(`  ✓ Promoted ${promoted} long string field(s) to text`));
+        }
         Object.keys(contentTypes).forEach((name) => {
             generatedFiles.add(toPosixPath(path.join('.see-ms', 'schemas', `${name}.json`)));
         });

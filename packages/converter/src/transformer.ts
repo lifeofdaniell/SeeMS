@@ -58,6 +58,49 @@ function mapFieldTypeToStrapi(fieldType: string): { type: string; isComponent?: 
     return { type: typeMap[fieldType] || 'string' };
 }
 
+/** Strapi maps a `string` attribute to SQL varchar(255); `text` is unbounded. */
+const STRAPI_STRING_MAX = 255;
+
+/**
+ * Upgrade `string` attributes to `text` when their seed content would overflow
+ * varchar(255). Webflow content (paragraphs, marquees, long copy) regularly
+ * exceeds 255 chars; left as `string` it makes Postgres reject the insert with
+ * "value too long for type character varying(255)" and the seed fails with a
+ * generic 500. Run this after both the schemas and the seed data exist (the
+ * manifest alone doesn't carry content). Short fields stay `string` so the admin
+ * UI keeps single-line inputs. Mutates `contentTypes`; returns the count changed.
+ */
+export function upgradeLongStringFieldsToText(
+    contentTypes: Record<string, any>,
+    seedData: Record<string, any>
+): number {
+    let upgraded = 0;
+
+    for (const [name, schema] of Object.entries(contentTypes)) {
+        const attributes = schema?.attributes;
+        const data = seedData?.[name];
+        if (!attributes || data == null) continue;
+
+        const rows: any[] = Array.isArray(data) ? data : [data];
+
+        for (const [fieldName, attr] of Object.entries<any>(attributes)) {
+            if (!attr || attr.type !== 'string') continue;
+
+            const overflows = rows.some((row) => {
+                const value = row?.[fieldName];
+                return typeof value === 'string' && value.length > STRAPI_STRING_MAX;
+            });
+
+            if (overflows) {
+                attr.type = 'text';
+                upgraded++;
+            }
+        }
+    }
+
+    return upgraded;
+}
+
 /**
  * Generate proper plural form for a word
  */
