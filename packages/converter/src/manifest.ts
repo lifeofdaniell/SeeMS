@@ -83,11 +83,14 @@ async function attachComponentFields(
     const contentMode = component.contentMode || "shared-global";
     const role = component.role || "shared-section";
 
+    const isSharedGlobal = role !== "collection-item" && (contentMode === "shared-global" || contentMode === "auto");
     components[component.name] = {
       ...component,
       role,
       contentMode,
-      fields: role === "collection-item" ? detection.fields : prefixedFields
+      // shared-global → its own single type (un-prefixed fields).
+      // collection-item → un-prefixed. per-page → prefixed (merged into pages).
+      fields: (role === "collection-item" || isSharedGlobal) ? detection.fields : prefixedFields
     };
 
     if (role === "collection-item") {
@@ -112,9 +115,9 @@ async function attachComponentFields(
           ...prefixedFields
         };
       }
-    } else if (contentMode === "shared-global" || contentMode === "auto") {
-      Object.assign(globalFields!, prefixedFields);
     }
+    // shared-global / auto: becomes a per-component single type, built from
+    // components[name].fields in the transformer — nothing to merge here.
   }
 
   if (manifest.global) {

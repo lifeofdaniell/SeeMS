@@ -27,7 +27,7 @@ describe("writeAstroVuePage", () => {
       expect(out).toContain("/api/about?populate=*");
       expect(out).toContain("import.meta.env.PUBLIC_STRAPI_URL");
       // pass fetched content into the component
-      expect(out).toContain("<Page content={content} />");
+      expect(out).toContain("<Page content={content} globals={globals} />");
       // graceful fallback so a down Strapi doesn't fail the build
       expect(out).toContain("try {");
       expect(out).toContain("catch");

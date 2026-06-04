@@ -187,7 +187,7 @@ async function regeneratePageFiles(
         wfSite: parsed.wfSite,
         bodyClass: parsed.bodyClass,
         uniqueBodyInlineScripts: uniqueScripts,
-      }, editorEnabled, pageCollections);
+      }, editorEnabled, pageCollections, pageComponentMap.get(pageName) || []);
     }
   } else {
     for (const htmlFile of htmlFiles) {

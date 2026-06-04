@@ -1,5 +1,34 @@
 import { describe, it, expect } from "vitest";
-import { upgradeLongStringFieldsToText, LINK_COMPONENT_SCHEMA, manifestToSchemas } from "../transformer";
+import { upgradeLongStringFieldsToText, LINK_COMPONENT_SCHEMA, manifestToSchemas, sharedComponentTypeName } from "../transformer";
+
+describe("shared-component single types (no global bucket)", () => {
+  it("emits one un-prefixed single type per shared-global component", () => {
+    const manifest = {
+      version: 1,
+      pages: {},
+      global: {
+        components: {
+          Nav: {
+            name: "Nav",
+            role: "shared-section",
+            contentMode: "shared-global",
+            fields: { label: { type: "plain", selector: ".l" } },
+          },
+        },
+      },
+    } as any;
+    const { contentTypes } = manifestToSchemas(manifest);
+    expect(contentTypes.global).toBeUndefined();              // no flat bucket
+    expect(contentTypes.nav?.kind).toBe("singleType");        // own type
+    expect(Object.keys(contentTypes.nav.attributes)).toContain("label"); // un-prefixed
+  });
+
+  it("sharedComponentTypeName kebab-cases component names", () => {
+    expect(sharedComponentTypeName("Nav")).toBe("nav");
+    expect(sharedComponentTypeName("BodCard")).toBe("bod-card");
+    expect(sharedComponentTypeName("Announcement_Bar")).toBe("announcement-bar");
+  });
+});
 
 describe("collection schema names — singular must differ from plural (Strapi unicity)", () => {
   const build = (collName: string) => {

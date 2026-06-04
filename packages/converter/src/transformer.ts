@@ -360,12 +360,39 @@ export function manifestToSchemas(manifest: CMSManifest): {
         }
     }
 
-    // Add global schema if present
+    // Shared-global components → one single type each (un-prefixed fields),
+    // instead of one giant prefixed `global` bucket.
+    if (manifest.global?.components) {
+        for (const [compName, comp] of Object.entries(manifest.global.components)) {
+            const c = comp as any;
+            if (c.role === 'collection-item') continue;
+            const mode = c.contentMode || 'shared-global';
+            if (mode !== 'shared-global' && mode !== 'auto') continue;
+            const fields = c.fields || {};
+            if (Object.keys(fields).length === 0) continue;
+            contentTypes[sharedComponentTypeName(compName)] = pageToStrapiSchema(sharedComponentTypeName(compName), fields);
+        }
+    }
+
+    // Any non-component global fields still become a `global` single type.
     if (manifest.global?.fields && Object.keys(manifest.global.fields).length > 0) {
         contentTypes['global'] = pageToStrapiSchema('global', manifest.global.fields);
     }
 
     return { contentTypes, componentSchemas };
+}
+
+/**
+ * Strapi single-type name for a shared component (e.g. "Nav" → "nav",
+ * "BodCard" → "bod-card"). Shared by schema, seed, and page generation so the
+ * content-type, its /api route, and the Vue prop key all line up.
+ */
+export function sharedComponentTypeName(componentName: string): string {
+    return componentName
+        .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+        .replace(/[_\s]+/g, '-')
+        .replace(/--+/g, '-')
+        .toLowerCase();
 }
 
 /**

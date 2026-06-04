@@ -26,11 +26,13 @@ export function normalizePublicAssetPath(src: string): string {
   let normalized = normalizeAssetUrl(src).replace(/^(\.\.\/)+/, "").replace(/^\.\//, "");
   normalized = toOriginalImageCandidate(normalized);
 
+  // Serve assets at Webflow's native root paths (/images/, /css/, …) so refs
+  // baked into Webflow's JS resolve too. Strip any legacy /assets/ prefix.
   if (normalized.startsWith("/assets/")) {
-    return normalized.replace(/\/\.\.\//g, "/");
+    return normalized.replace(/^\/assets\//, "/").replace(/\/\.\.\//g, "/");
   }
 
-  return `/assets/${normalized.replace(/^\/+/, "")}`;
+  return `/${normalized.replace(/^\/+/, "")}`;
 }
 
 export function normalizeImageSeedPath(imageSrc: string): string {

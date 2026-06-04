@@ -1,6 +1,20 @@
 # Refactor: shared-component content → one Strapi single type per component
 
-**Status:** spec / not started. Replaces the current flat `global` single type.
+**Status:** ✅ IMPLEMENTED (converter, 101 tests green, builds clean). Needs E2E verification (re-extract → setup-strapi → restart → `pnpm dev`).
+
+Implemented across:
+- `manifest.ts` — shared-global components keep un-prefixed fields; no merged `globalFields`.
+- `transformer.ts` — emits one single type per shared component via `sharedComponentTypeName()` (exported); `global` bucket only for non-component global fields.
+- `content-extractor.ts` — `extractAllContent` adds per-component content; `formatForStrapi` emits `seed.<type>` (un-prefixed). `ExtractedContent.components` added.
+- `vue-transformer.ts` — astro shared components use `defineProps<{content}>` (not `useStrapiContent`); bindings now un-prefixed (fields are un-prefixed); page declares `globals` prop; `restoreComponentTags` emits `<Comp :content="globals['<type>']" />` on astro.
+- `filesystem.ts` `writeAstroVuePage` — new `sharedComponents: string[]` param; fetches `/api/<type>` per shared component into `globals` (media-resolved); renders `<Page content={content} globals={globals} />`.
+- call sites `converter.ts` + `extract.ts` pass `pageComponentMap.get(pageName) || []`.
+
+**Remaining:** E2E run to confirm a real nav/footer renders server-side with content. And the older `docs` text below describes the pre-refactor state — kept for reference.
+
+---
+(original spec below)
+
 
 ## Problem
 Today, every extracted **shared-section** component (Nav, Footer, …) has its

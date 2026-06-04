@@ -826,7 +826,7 @@ async function uploadAllImages(
   apiToken: string
 ): Promise<Map<string, number>> {
   const mediaMap = new Map<string, number>();
-  const imagesDir = path.join(projectDir, "public", "assets", "images");
+  const imagesDir = path.join(projectDir, "public", "images");
 
   if (!(await fs.pathExists(imagesDir))) {
     console.log("   No images directory found");

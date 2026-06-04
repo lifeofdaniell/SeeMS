@@ -154,10 +154,10 @@ export function keepPreviousNonPageFiles(
 
 export function getGeneratedAssetFiles(assets: AssetPaths): string[] {
   return [
-    ...assets.css.map((file) => toPosixPath(path.join("assets", "css", path.relative("css", file)))),
-    ...assets.images.map((file) => toPosixPath(path.join("public", "assets", "images", path.relative("images", file)))),
-    ...assets.fonts.map((file) => toPosixPath(path.join("public", "assets", "fonts", path.relative("fonts", file)))),
-    ...assets.js.map((file) => toPosixPath(path.join("public", "assets", "js", path.relative("js", file)))),
+    ...assets.css.map((file) => toPosixPath(path.join("public", "css", path.relative("css", file)))),
+    ...assets.images.map((file) => toPosixPath(path.join("public", "images", path.relative("images", file)))),
+    ...assets.fonts.map((file) => toPosixPath(path.join("public", "fonts", path.relative("fonts", file)))),
+    ...assets.js.map((file) => toPosixPath(path.join("public", "js", path.relative("js", file)))),
   ];
 }
 

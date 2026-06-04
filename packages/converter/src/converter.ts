@@ -278,7 +278,7 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
                     wfSite: parsed.wfSite,
                     bodyClass: parsed.bodyClass,
                     uniqueBodyInlineScripts: uniqueScripts,
-                }, editorEnabled);
+                }, editorEnabled, [], pageComponentMap.get(pageName) || []);
                 console.log(pc.green(`  ✓ Created ${htmlFile.replace('.html', '.astro')}`));
             }
         }
@@ -332,7 +332,7 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
                     wfSite: parsed.wfSite,
                     bodyClass: parsed.bodyClass,
                     uniqueBodyInlineScripts: uniqueScripts,
-                }, editorEnabled, pageCollections);
+                }, editorEnabled, pageCollections, pageComponentMap.get(pageName) || []);
             }
         }
 
@@ -433,7 +433,7 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
         if (allEmbeddedStyles.trim()) {
             console.log(pc.blue('\n✨ Writing embedded styles...'));
             const dedupedStyles = deduplicateStyles(allEmbeddedStyles);
-            await writeEmbeddedStyles(outputDir, dedupedStyles);
+            await writeEmbeddedStyles(outputDir, dedupedStyles, target);
             console.log(pc.green('  ✓ Embedded styles added to main.css'));
         }
 

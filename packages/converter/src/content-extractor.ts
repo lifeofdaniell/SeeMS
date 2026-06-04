@@ -6,10 +6,13 @@
 import type { CMSManifest, PageManifest, LinkFieldValue } from '@see-ms/types';
 import * as cheerio from 'cheerio';
 import { isLikelyImagePath, normalizeImageSeedPath } from './assets';
+import { sharedComponentTypeName } from './transformer';
 
 export interface ExtractedContent {
     pages: Record<string, PageContent>;
     global?: PageContent;
+    /** Per shared-component content, keyed by its single-type name (nav, footer…). */
+    components?: Record<string, PageContent>;
 }
 
 /**
@@ -188,6 +191,26 @@ export function extractAllContent(
         }
     }
 
+    // Shared-global components → one seed entry each (un-prefixed fields),
+    // extracted from a page that contains the component.
+    extractedContent.components = {};
+    for (const [compName, comp] of Object.entries(manifest.global?.components || {})) {
+        const c = comp as any;
+        if (c.role === 'collection-item') continue;
+        const mode = c.contentMode || 'shared-global';
+        if (mode !== 'shared-global' && mode !== 'auto') continue;
+        const fields = c.fields || {};
+        if (Object.keys(fields).length === 0) continue;
+        const pageId = (c.pages && c.pages[0]) || Object.keys(manifest.pages)[0];
+        const html = pageId ? htmlFiles.get(pageId) : undefined;
+        if (!html) continue;
+        const typeName = sharedComponentTypeName(compName);
+        extractedContent.components[typeName] = extractContentFromHTML(html, typeName, {
+            fields,
+            collections: {}
+        });
+    }
+
     return { ...extractedContent, manifest };
 }
 
@@ -271,6 +294,22 @@ export function formatForStrapi(extracted: ExtractedContent): Record<string, any
             }
         }
         seedData.global = formattedFields;
+    }
+
+    // Per shared-component seed entries (nav, footer, …), un-prefixed.
+    for (const [typeName, pc] of Object.entries(extracted.components || {})) {
+        if (!pc?.fields || Object.keys(pc.fields).length === 0) continue;
+        const formattedFields: Record<string, any> = {};
+        for (const [fieldName, value] of Object.entries(pc.fields)) {
+            if (isLinkValue(value)) {
+                formattedFields[fieldName] = value;
+            } else if (fieldName.includes('image') || fieldName.includes('img') || fieldName.includes('bg') || isLikelyImagePath(value)) {
+                formattedFields[fieldName] = normalizeImagePath(value);
+            } else {
+                formattedFields[fieldName] = value;
+            }
+        }
+        seedData[typeName] = formattedFields;
     }
 
     return seedData;

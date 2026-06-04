@@ -280,7 +280,7 @@ export function transformForNuxt(
     if (style) {
       $el.attr("style", style.replace(
         /url\((['"]?)((?:videos|images|documents|fonts)\/[^'")\s]+)\1\)/g,
-        (_m, q, p) => `url(${q}/assets/${p}${q})`
+        (_m, q, p) => `url(${q}/${p}${q})`
       ));
     }
   });

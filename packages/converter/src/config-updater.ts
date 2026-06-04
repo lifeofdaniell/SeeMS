@@ -14,15 +14,15 @@ const EMBEDDED_STYLES_END = '/* SeeMS generated embedded styles end */';
  * Generate the webflow-assets.ts Vite plugin
  */
 export function generateWebflowAssetPlugin(cssFiles: string[]): string {
-  // Convert css/normalize.css to /assets/css/normalize.css
-  const webflowFiles = cssFiles.map(file => `/assets/css/${path.basename(file)}`);
+  // Convert css/normalize.css to /css/normalize.css
+  const webflowFiles = cssFiles.map(file => `/css/${path.basename(file)}`);
 
   return `import type { Plugin } from 'vite'
 
 const webflowFiles = [${webflowFiles.map(f => `'${f}'`).join(', ')}]
 const replacements = [
-  ['../images/', '/assets/images/'],
-  ['../fonts/', '/assets/fonts/']
+  ['../images/', '/images/'],
+  ['../fonts/', '/fonts/']
 ]
 
 const webflowURLReset = (): Plugin => ({
@@ -112,11 +112,14 @@ export async function updateNuxtConfig(
  */
 export async function writeEmbeddedStyles(
   outputDir: string,
-  styles: string
+  styles: string,
+  target: 'nuxt' | 'astro-vue' = 'nuxt'
 ): Promise<void> {
   if (!styles.trim()) return;
 
-  const cssDir = path.join(outputDir, 'assets', 'css');
+  const cssDir = target === 'astro-vue'
+    ? path.join(outputDir, 'public', 'css')
+    : path.join(outputDir, 'assets', 'css');
   await fs.ensureDir(cssDir);
 
   const mainCssPath = path.join(cssDir, 'main.css');

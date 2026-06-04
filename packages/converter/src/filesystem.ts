@@ -10,12 +10,13 @@ import pc from 'picocolors';
 import { isResponsiveImageVariant } from './assets';
 import type { ProjectTarget } from './boilerplate';
 import type { ScriptTag } from './parser';
+import { sharedComponentTypeName } from './transformer';
 
 export interface AssetPaths {
-  css: string[];       // Goes to assets/css/ (nuxt) or public/assets/css/ (astro-vue)
+  css: string[];       // Goes to assets/css/ (nuxt) or public/css/ (astro-vue)
   images: string[];    // Goes to public/assets/images/
   fonts: string[];     // Goes to public/assets/fonts/
-  js: string[];        // Goes to public/assets/js/
+  js: string[];        // Goes to public/js/
   videos: string[];    // Goes to public/assets/videos/
   documents: string[]; // Goes to public/assets/documents/
 }
@@ -45,7 +46,7 @@ export async function scanAssets(webflowDir: string): Promise<AssetPaths> {
 }
 
 /**
- * Copy CSS files — Nuxt: assets/css/  Astro: public/assets/css/
+ * Copy CSS files — Nuxt: assets/css/  Astro: public/css/
  */
 export async function copyCSSFiles(
   webflowDir: string,
@@ -54,7 +55,7 @@ export async function copyCSSFiles(
   target: ProjectTarget = 'nuxt'
 ): Promise<void> {
   const targetDir = target === 'astro-vue'
-    ? path.join(outputDir, 'public', 'assets', 'css')
+    ? path.join(outputDir, 'public', 'css')
     : path.join(outputDir, 'assets', 'css');
   await fs.ensureDir(targetDir);
 
@@ -75,7 +76,7 @@ export async function copyImages(
   outputDir: string,
   imageFiles: string[]
 ): Promise<void> {
-  const targetDir = path.join(outputDir, 'public', 'assets', 'images');
+  const targetDir = path.join(outputDir, 'public', 'images');
   await fs.ensureDir(targetDir);
 
   for (const file of imageFiles) {
@@ -95,7 +96,7 @@ export async function copyFonts(
   outputDir: string,
   fontFiles: string[]
 ): Promise<void> {
-  const targetDir = path.join(outputDir, 'public', 'assets', 'fonts');
+  const targetDir = path.join(outputDir, 'public', 'fonts');
   await fs.ensureDir(targetDir);
 
   for (const file of fontFiles) {
@@ -108,14 +109,14 @@ export async function copyFonts(
 }
 
 /**
- * Copy JS files to public/assets/js/
+ * Copy JS files to public/js/
  */
 export async function copyJSFiles(
   webflowDir: string,
   outputDir: string,
   jsFiles: string[]
 ): Promise<void> {
-  const targetDir = path.join(outputDir, 'public', 'assets', 'js');
+  const targetDir = path.join(outputDir, 'public', 'js');
   await fs.ensureDir(targetDir);
 
   for (const file of jsFiles) {
@@ -134,7 +135,7 @@ async function copyGenericPublicAssets(
   subfolder: string
 ): Promise<void> {
   if (files.length === 0) return;
-  const targetDir = path.join(outputDir, 'public', 'assets', subfolder);
+  const targetDir = path.join(outputDir, 'public', subfolder);
   await fs.ensureDir(targetDir);
   for (const file of files) {
     const source = path.join(webflowDir, file);
@@ -201,8 +202,8 @@ export async function writeVueComponent(
     const astroPath = path.join(astroPagesDir, astroName);
     const relativeVueImport = ensureRelativeImport(path.relative(path.dirname(astroPath), vuePath));
     const cssLinks = [
-      ...cssFiles.map(file => `/assets/css/${path.basename(file)}`),
-      '/assets/css/main.css',
+      ...cssFiles.map(file => `/css/${path.basename(file)}`),
+      '/css/main.css',
     ]
       .map(href => `<link rel="stylesheet" href="${href}" />`)
       .join('\n');
@@ -271,9 +272,9 @@ export async function generateBaseLayout(
   await fs.ensureDir(layoutsDir);
 
   const cssLinks = cssFiles
-    .map(f => `  <link rel="stylesheet" href="/assets/css/${path.basename(f)}" />`)
+    .map(f => `  <link rel="stylesheet" href="/css/${path.basename(f)}" />`)
     .join('\n');
-  const mainCssLink = `  <link rel="stylesheet" href="/assets/css/main.css" />`;
+  const mainCssLink = `  <link rel="stylesheet" href="/css/main.css" />`;
 
   const headCdnTags = headCdnScripts
     .map(s => {
@@ -292,7 +293,7 @@ export async function generateBaseLayout(
       let src = s.src;
       if (!src.startsWith('http') && !src.startsWith('//')) {
         const basename = src.replace(/^\.?\//, '').replace(/^js\//, '');
-        src = `/assets/js/${basename}`;
+        src = `/js/${basename}`;
       }
       const integrity = s.integrity ? ` integrity="${s.integrity}"` : '';
       const crossorigin = s.crossorigin ? ` crossorigin="${s.crossorigin}"` : '';
@@ -406,7 +407,8 @@ export async function writeAstroVuePage(
     uniqueBodyInlineScripts?: string[];
   } = {},
   editorEnabled = false,
-  collectionNames: string[] = []
+  collectionNames: string[] = [],
+  sharedComponents: string[] = []
 ): Promise<void> {
   const astroPagesDir = path.join(outputDir, 'src', 'pages');
   const componentDir = path.join(outputDir, 'src', 'components', 'pages');
@@ -438,6 +440,18 @@ export async function writeAstroVuePage(
 
   // Fetch each collection the page renders and attach it under content[<name>]
   // so the Vue component can v-for over content.<collection>.
+  // Shared components: fetch each one's single type (/api/<type>) and store it
+  // under globals[<type>] so the page can pass <Comp :content="globals['type']" />.
+  const globalsFetches = sharedComponents.map((name) => {
+    const typeName = sharedComponentTypeName(name);
+    const v = `_g_${typeName.replace(/[^a-zA-Z0-9]/g, '_')}`;
+    return `  const ${v}Res = await fetch(\`\${strapiUrl}/api/${typeName}?populate=*\`);
+  if (${v}Res.ok) {
+    const ${v}Json = await ${v}Res.json();
+    globals['${typeName}'] = resolveStrapiMedia(${v}Json?.data?.attributes ?? ${v}Json?.data ?? {});
+  }`;
+  }).join('\n');
+
   const collectionFetches = collectionNames.map((name) => {
     const v = `_${name.replace(/[^a-zA-Z0-9]/g, '_')}`;
     // Strapi's collection REST route is the kebab-case pluralName. The schema
@@ -479,19 +493,20 @@ function resolveStrapiMedia(value: any): any {
   return value;
 }
 let content: Record<string, any> = {};
+const globals: Record<string, any> = {};
 try {
   const response = await fetch(\`\${strapiUrl}/api/${pageName}?populate=*\`);
   if (response.ok) {
     const json = await response.json();
     content = json?.data?.attributes ?? json?.data ?? {};
-  }${collectionFetches ? '\n' + collectionFetches : ''}
+  }${collectionFetches ? '\n' + collectionFetches : ''}${globalsFetches ? '\n' + globalsFetches : ''}
 } catch (error) {
   console.warn('[SeeMS] Could not fetch Strapi content for "${pageName}":', error instanceof Error ? error.message : error);
 }
 content = resolveStrapiMedia(content);
 ---
 <BaseLayout title="${safeTitle}" wfPage="${safeWfPage}" wfSite="${safeWfSite}" bodyClass="${safeBodyClass}">
-  <Page content={content} />${pageScriptsSlot}
+  <Page content={content} globals={globals} />${pageScriptsSlot}
 </BaseLayout>${editorScript}
 `, 'utf-8');
 }

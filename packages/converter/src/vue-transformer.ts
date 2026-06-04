@@ -8,6 +8,7 @@ import path from "path";
 import { glob } from "glob";
 import type { CMSManifest, CollectionMapping } from "@see-ms/types";
 import { htmlPathToPageId } from "./routes";
+import { sharedComponentTypeName } from "./transformer";
 
 /**
  * Check if element is a safe leaf (no structural children)
@@ -264,7 +265,7 @@ export async function transformVueToReactive(
     return component?.contentMode === "per-page" && component.pages.includes(pageName);
   });
   transformedTemplate = restoreCollectionComponentTags(transformedTemplate);
-  transformedTemplate = restoreComponentTags(transformedTemplate, componentNames, perPageComponentNames);
+  transformedTemplate = restoreComponentTags(transformedTemplate, componentNames, perPageComponentNames, options.target);
 
   // Generate new script setup
   let scriptSetup: string;
@@ -276,7 +277,7 @@ export async function transformVueToReactive(
       .join("\n");
     scriptSetup = `<script setup lang="ts">
 // Auto-generated — content is passed from the Astro page (server-side Strapi fetch)
-${componentImports ? componentImports + "\n" : ""}defineProps<{ content: Record<string, any> }>();
+${componentImports ? componentImports + "\n" : ""}defineProps<{ content: Record<string, any>; globals?: Record<string, any> }>();
 </script>`;
   } else {
     // Nuxt: content is fetched client-side via the auto-imported composable
@@ -352,14 +353,19 @@ export async function transformSharedComponentsToReactive(
       transformedTemplate = transformedTemplate.replaceAll(`content.${fieldName}`, `${contentSource}.${fieldName}`);
     }
 
-    const importLine = !isCollectionItem && !isPerPage && options.target === "astro-vue"
-      ? `import { useStrapiContent } from '~/src/composables/useStrapiContent';\n`
-      : "";
+    const isAstroVue = options.target === "astro-vue";
+    // Nuxt auto-imports the composable; astro shared sections receive their own
+    // single type's content as a prop from the page (no client-side fetch).
+    const importLine = "";
     const contentSetup = isCollectionItem
-      ? `defineProps<{ item: Record<string, any> }>();`
+      ? `const props = defineProps<{ item?: Record<string, any> }>();
+const item = props.item ?? {};`
       : isPerPage
       ? `const props = defineProps<{ content: Record<string, any> }>();
 const componentContent = props.content || {};`
+      : isAstroVue
+      ? `const props = defineProps<{ content?: Record<string, any> }>();
+const content = props.content ?? {};`
       : `const { content } = useStrapiContent('global');`;
     const scriptSetup = `<script setup lang="ts">
 ${importLine}${contentSetup}
@@ -377,13 +383,18 @@ ${transformedTemplate}
 function restoreComponentTags(
   html: string,
   componentNames: string[],
-  perPageComponentNames: string[] = []
+  perPageComponentNames: string[] = [],
+  target?: "nuxt" | "astro-vue"
 ): string {
   let restored = html;
   for (const name of componentNames) {
     const lowered = name.toLowerCase();
     const tag = perPageComponentNames.includes(name)
       ? `<${name} :content="content" />`
+      : target === "astro-vue"
+      // astro shared section: feed it its own single type's content from the
+      // page's `globals` (the .astro fetches /api/<type> per shared component).
+      ? `<${name} :content="globals && globals['${sharedComponentTypeName(name)}']" />`
       : `<${name} />`;
     restored = restored
       .replace(new RegExp(`<!--COMPONENT:${name}-->`, "g"), tag)
