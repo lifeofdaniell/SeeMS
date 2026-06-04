@@ -272,9 +272,17 @@ function collectionToStrapiSchema(
         .join(' ');
 
     const kebabCaseName = collectionName.replace(/_/g, '-').replace(/--+/g, '-');
-    const singularName = kebabCaseName.endsWith('s')
+    // Strapi requires singularName !== pluralName (and global uniqueness). The
+    // pluralName stays = kebabCaseName so it matches the fetch route the page
+    // wrapper derives; the singular is just made distinct. A name ending in 's'
+    // singularizes cleanly ("boards"→"board"); one that doesn't (e.g. "board")
+    // would collide, so we suffix it.
+    let singularName = kebabCaseName.endsWith('s')
         ? kebabCaseName.slice(0, -1)
         : kebabCaseName;
+    if (singularName === kebabCaseName) {
+        singularName = `${kebabCaseName}-item`;
+    }
 
     return {
         schema: {
