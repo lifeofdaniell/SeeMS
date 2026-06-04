@@ -1,6 +1,6 @@
 CLI := node packages/converter/dist/cli.mjs
-DIR ?= ../qzam
-SRC ?= ~/Downloads/quantum-zenith----asset-management.webflow
+DIR ?= ../qzcap
+SRC ?= ~/Downloads/quantum-zenith-capital-website.webflow/
 
 default: help
 
@@ -9,7 +9,9 @@ help:
 	@echo "Usage: make <target> [DIR=./path]   (DIR defaults to ./convert)"
 	@echo ""
 	@echo "Build:"
+	@echo "  make build-types                  rebuild @see-ms/types"
 	@echo "  make build-converter              rebuild the CLI"
+	@echo "  make build                        rebuild types then the CLI (correct order)"
 	@echo ""
 	@echo "Conversion:"
 	@echo "  make convert                      convert Webflow export → Vue/Astro project"
@@ -22,8 +24,14 @@ help:
 	@echo "  make setup-strapi                 install schemas, seed content into Strapi"
 	@echo ""
 
+build-types:
+	pnpm --filter @see-ms/types build
+
 build-converter:
 	pnpm --filter @see-ms/converter build
+
+# Types must build before the converter (its DTS build resolves against them).
+build: build-types build-converter
 
 convert:
 	$(CLI) convert $(SRC)
