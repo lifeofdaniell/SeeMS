@@ -272,23 +272,21 @@ function collectionToStrapiSchema(
         .join(' ');
 
     const kebabCaseName = collectionName.replace(/_/g, '-').replace(/--+/g, '-');
-    // Strapi requires singularName !== pluralName (and global uniqueness). The
-    // pluralName stays = kebabCaseName so it matches the fetch route the page
-    // wrapper derives; the singular is just made distinct. A name ending in 's'
-    // singularizes cleanly ("boards"→"board"); one that doesn't (e.g. "board")
-    // would collide, so we suffix it.
-    let singularName = kebabCaseName.endsWith('s')
-        ? kebabCaseName.slice(0, -1)
-        : kebabCaseName;
-    if (singularName === kebabCaseName) {
-        singularName = `${kebabCaseName}-item`;
-    }
+    // Strapi requires: the content-type key (folder, = singularName) is the
+    // name, AND singularName !== pluralName. So keep singularName = the name and
+    // pluralize the plural. Names already ending in 's' are treated as the
+    // plural form ("...slides" → slide/slides); others get a trailing 's'
+    // ("board" → board/boards). The page wrapper derives the fetch route with
+    // the same rule, so /api/<pluralName> stays in sync.
+    const endsWithS = kebabCaseName.endsWith('s');
+    const singularName = endsWithS ? kebabCaseName.slice(0, -1) : kebabCaseName;
+    const pluralName = endsWithS ? kebabCaseName : `${kebabCaseName}s`;
 
     return {
         schema: {
             kind: 'collectionType',
             collectionName: kebabCaseName,
-            info: { singularName, pluralName: kebabCaseName, displayName },
+            info: { singularName, pluralName, displayName },
             options: { draftAndPublish: true },
             attributes,
         },

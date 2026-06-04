@@ -18,10 +18,11 @@ describe("collection schema names — singular must differ from plural (Strapi u
     return manifestToSchemas(manifest).contentTypes[collName].info;
   };
 
-  it("suffixes the singular when the collection name doesn't end in 's' (e.g. 'board')", () => {
+  it("pluralizes when the collection name doesn't end in 's' (e.g. 'board')", () => {
     const info = build("board");
-    expect(info.pluralName).toBe("board"); // route stays stable
-    expect(info.singularName).not.toBe(info.pluralName);
+    // singularName must equal the key (folder), pluralName must differ
+    expect(info.singularName).toBe("board");
+    expect(info.pluralName).toBe("boards");
   });
 
   it("singularizes cleanly when the name ends in 's'", () => {
@@ -32,7 +33,8 @@ describe("collection schema names — singular must differ from plural (Strapi u
 
   it("handles underscored multi-word names without singular==plural", () => {
     const info = build("clock_card");
-    expect(info.pluralName).toBe("clock-card");
+    expect(info.singularName).toBe("clock-card");
+    expect(info.pluralName).toBe("clock-cards");
     expect(info.singularName).not.toBe(info.pluralName);
   });
 });
