@@ -52,6 +52,25 @@ describe("writeAstroVuePage", () => {
     }
   });
 
+  it("fetches collections at the collapsed kebab route, stored under the underscore key", async () => {
+    const dir = await tmpDir();
+    try {
+      await writeAstroVuePage(dir, "index.html", "index", {}, false, [
+        "quantum_zenith_design_system__clock_cards",
+        "section_slider_slides",
+      ]);
+      const out = await fs.readFile(path.join(dir, "src/pages/index.astro"), "utf-8");
+      // `__` collapses to a single `-` to match the schema's pluralName route
+      expect(out).toContain("/api/quantum-zenith-design-system-clock-cards?populate=*");
+      expect(out).not.toContain("system--clock-cards");
+      expect(out).toContain("/api/section-slider-slides?populate=*");
+      // ...but stored under the original underscore key the Vue template binds
+      expect(out).toContain("content['quantum_zenith_design_system__clock_cards']");
+    } finally {
+      await fs.remove(dir);
+    }
+  });
+
   it("omits the editor import when the editor is disabled", async () => {
     const dir = await tmpDir();
     try {

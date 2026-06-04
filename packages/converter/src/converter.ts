@@ -12,6 +12,8 @@ import {
     formatVueFiles,
     generateBaseLayout,
     writeAstroVuePage,
+    sharedComponentsDir,
+    sharedComponentsRelDir,
 } from './filesystem';
 import { parseHTML, transformForNuxt, htmlToVueComponent, deduplicateStyles, extractPageScripts } from './parser';
 import type { ParsedPage, PageScripts } from './parser';
@@ -147,7 +149,7 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
 
         if (sharedComponents.length > 0) {
             sharedComponents.forEach((component) => {
-                generatedFiles.add(toPosixPath(path.join('components', `${component.name}.vue`)));
+                generatedFiles.add(toPosixPath(path.join(sharedComponentsRelDir(target), `${component.name}.vue`)));
             });
             console.log(pc.green(`  ✓ Extracted ${sharedComponents.length} shared components:`));
             for (const component of sharedComponents) {
@@ -299,7 +301,7 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
             collectionClasses,
             collectionNames,
             sharedComponents,
-            componentsDir: path.join(outputDir, 'components'),
+            componentsDir: sharedComponentsDir(outputDir, target),
             ignoreSelectors: config.ignore?.selectors,
             ignoreClasses: config.ignore?.classes,
             provider,
@@ -361,7 +363,7 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
         if (target !== 'astro-vue') {
             console.log(pc.blue('\n⚡ Transforming Vue files to reactive templates...'));
             await transformAllVuePages(pagesDir, manifest, { target });
-            await transformSharedComponentsToReactive(path.join(outputDir, 'components'), manifest, { target });
+            await transformSharedComponentsToReactive(sharedComponentsDir(outputDir, target), manifest, { target });
             console.log(pc.green(`  ✓ Transformed ${Object.keys(manifest.pages).length} pages to use Vue template syntax`));
         }
 

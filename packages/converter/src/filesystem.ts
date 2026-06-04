@@ -235,6 +235,19 @@ function ensureRelativeImport(importPath: string): string {
   return normalized.startsWith('.') ? normalized : `./${normalized}`;
 }
 
+/**
+ * Absolute path to the extracted shared-components directory for a target.
+ * Astro keeps Vue components under `src/components/`; Nuxt uses `components/`.
+ */
+export function sharedComponentsDir(projectDir: string, target: ProjectTarget): string {
+  return path.join(projectDir, target === 'astro-vue' ? 'src/components' : 'components');
+}
+
+/** Project-relative POSIX form of {@link sharedComponentsDir}, for state tracking. */
+export function sharedComponentsRelDir(target: ProjectTarget): string {
+  return target === 'astro-vue' ? 'src/components' : 'components';
+}
+
 export interface BaseLayoutOptions {
   cssFiles: string[];
   headCdnScripts: ScriptTag[];
@@ -424,9 +437,10 @@ export async function writeAstroVuePage(
   const collectionFetches = collectionNames.map((name) => {
     const v = `_${name.replace(/[^a-zA-Z0-9]/g, '_')}`;
     // Strapi's collection REST route is the kebab-case pluralName, which the
-    // schema generator derives from the manifest key by `_` → `-`. The Vue
+    // schema generator derives from the manifest key by `_` → `-` and then
+    // collapsing repeated hyphens (so `a__b` → `a-b`, not `a--b`). The Vue
     // template still binds the underscore key, so fetch by route, store by key.
-    const route = name.replace(/_/g, '-');
+    const route = name.replace(/_/g, '-').replace(/--+/g, '-');
     return `  const ${v}Res = await fetch(\`\${strapiUrl}/api/${route}?populate=*\`);
   if (${v}Res.ok) {
     const ${v}Json = await ${v}Res.json();
