@@ -14,5 +14,6 @@ export { manifestToSchemas, getLinkComponentSchema, LINK_COMPONENT_SCHEMA } from
 export { setupBoilerplate } from './boilerplate';
 export { transformAllVuePages } from './vue-transformer';
 export { runExtractCollections, runExtractComponent } from './extract';
+export { setupEditorOverlay } from './editor-integration';
 export { extractSharedComponents, parseAllPages, findSharedSections } from './component-extractor';
 export type { ConversionOptions, ConversionReport, SeeMSConfig, SharedComponent } from '@see-ms/types';

@@ -36,6 +36,7 @@ import {
   createStrapiContentComposable,
   createAstroStrapiContentComposable,
   createStrapiBootstrap,
+  setupEditorOverlay,
 } from './editor-integration';
 import { replaceWithComponent } from './component-extractor';
 import { parseHTML, transformForNuxt, htmlToVueComponent, extractPageScripts } from './parser';
@@ -380,6 +381,13 @@ export async function runExtractCollections(
   }
   console.log(pc.green('  ✓ Composables updated'));
 
+  // Regenerate the inline editor overlay too — the pages import '../cms-editor',
+  // so re-extracting without this leaves a dangling import (convert/extract parity).
+  if (editorEnabled) {
+    await setupEditorOverlay(projectDir, target);
+    console.log(pc.green('  ✓ Editor overlay regenerated'));
+  }
+
   // Schemas + seed
   console.log(pc.blue('\n📋 Regenerating schemas and seed data...'));
   await regenerateSchemasAndSeed(projectDir, manifest, originalHtmlContentMap, provider);
@@ -594,6 +602,13 @@ export async function runExtractComponent(
     await createAstroStrapiContentComposable(projectDir, manifest);
   }
   console.log(pc.green('  ✓ Composables updated'));
+
+  // Regenerate the inline editor overlay too — the pages import '../cms-editor',
+  // so re-extracting without this leaves a dangling import (convert/extract parity).
+  if (editorEnabled) {
+    await setupEditorOverlay(projectDir, target);
+    console.log(pc.green('  ✓ Editor overlay regenerated'));
+  }
 
   // Schemas + seed
   console.log(pc.blue('\n📋 Regenerating schemas and seed data...'));

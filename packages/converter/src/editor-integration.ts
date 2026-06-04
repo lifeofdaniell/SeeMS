@@ -5,6 +5,25 @@
 import fs from "fs-extra";
 import path from "path";
 import type { CMSManifest } from "@see-ms/types";
+import type { ProjectTarget } from "./boilerplate";
+
+/**
+ * Generate the inline-editor overlay for a project: the client entry, the
+ * save/publish API endpoints, and the editor dependency. Shared by `convert`
+ * and the `extract` commands so re-extracting never leaves pages importing a
+ * `cms-editor` that was only created at convert time.
+ */
+export async function setupEditorOverlay(outputDir: string, target: ProjectTarget): Promise<void> {
+  if (target === "nuxt") {
+    await createEditorPlugin(outputDir);
+    await createSaveEndpoint(outputDir);
+    await createPublishEndpoint(outputDir);
+  } else {
+    await createAstroEditorClient(outputDir);
+    await createAstroSaveEndpoint(outputDir);
+  }
+  await addEditorDependency(outputDir);
+}
 
 function getPageCollections(manifest?: CMSManifest): Record<string, string[]> {
   if (!manifest) return {};
