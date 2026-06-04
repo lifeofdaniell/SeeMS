@@ -31,11 +31,17 @@ describe("writeAstroVuePage", () => {
       // graceful fallback so a down Strapi doesn't fail the build
       expect(out).toContain("try {");
       expect(out).toContain("catch");
+      // media objects flattened to absolute URLs so :src/:href bindings work
+      expect(out).toContain("resolveStrapiMedia");
+      expect(out).toContain("content = resolveStrapiMedia(content);");
       // BaseLayout metadata preserved
       expect(out).toContain('title="About Us"');
       expect(out).toContain('wfPage="p1"');
-      // editor wired (preview mode)
-      expect(out).toContain("import '../cms-editor'");
+      // editor: dev-only, lazy-loaded on ?preview=true (out of the prod build graph)
+      expect(out).toContain("import.meta.env.DEV");
+      expect(out).toContain("is:inline");
+      expect(out).toContain("'preview'");
+      expect(out).toContain("import('/src/cms-editor.ts')");
     } finally {
       await fs.remove(dir);
     }
@@ -106,7 +112,8 @@ describe("writeAstroVuePage", () => {
         "utf-8"
       );
       expect(out).toContain("import Page from '../../components/pages/press-release/article.vue'");
-      expect(out).toContain("import '../../cms-editor'");
+      // editor uses an absolute dev-only path (same for nested pages, no ../../)
+      expect(out).toContain("import('/src/cms-editor.ts')");
     } finally {
       await fs.remove(dir);
     }

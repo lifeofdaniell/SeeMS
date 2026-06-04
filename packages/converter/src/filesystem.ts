@@ -206,7 +206,9 @@ export async function writeVueComponent(
     ]
       .map(href => `<link rel="stylesheet" href="${href}" />`)
       .join('\n');
-    const editorScript = editorEnabled ? "\n<script>\n  import '../cms-editor';\n</script>\n" : "";
+    const editorScript = editorEnabled
+      ? "\n{import.meta.env.DEV && (\n  <script is:inline>\n    if (new URLSearchParams(window.location.search).get('preview') === 'true') import('/src/cms-editor.ts');\n  </script>\n)}\n"
+      : "";
 
     await fs.ensureDir(path.dirname(vuePath));
     await fs.ensureDir(path.dirname(astroPath));
@@ -413,11 +415,9 @@ export async function writeAstroVuePage(
   const astroPath = path.join(astroPagesDir, astroName);
   const vuePath = path.join(componentDir, vueName);
   const layoutPath = path.join(outputDir, 'src', 'layouts', 'BaseLayout.astro');
-  const editorPath = path.join(outputDir, 'src', 'cms-editor');
 
   const relativeLayoutImport = ensureRelativeImport(path.relative(path.dirname(astroPath), layoutPath));
   const relativeVueImport = ensureRelativeImport(path.relative(path.dirname(astroPath), vuePath));
-  const relativeEditorImport = ensureRelativeImport(path.relative(path.dirname(astroPath), editorPath));
 
   const { title = '', wfPage = '', wfSite = '', bodyClass = '', uniqueBodyInlineScripts = [] } = pageOptions;
   const safeTitle = title.replace(/"/g, '&quot;');
@@ -428,8 +428,12 @@ export async function writeAstroVuePage(
   const pageScriptsSlot = uniqueBodyInlineScripts.length > 0
     ? `\n  <Fragment slot="page-scripts">\n${uniqueBodyInlineScripts.map(s => `    <script is:inline>${s}</script>`).join('\n')}\n  </Fragment>`
     : '';
+  // Editor overlay: only in dev builds (`import.meta.env.DEV` is statically
+  // false in prod → fully dropped), and only loaded at runtime on ?preview=true.
+  // `is:inline` keeps it out of the build graph entirely, so a view-only/prod
+  // site never imports or resolves cms-editor.
   const editorScript = editorEnabled
-    ? `\n<script>\n  import '${relativeEditorImport}';\n</script>\n`
+    ? `\n{import.meta.env.DEV && (\n  <script is:inline>\n    if (new URLSearchParams(window.location.search).get('preview') === 'true') import('/src/cms-editor.ts');\n  </script>\n)}\n`
     : '';
 
   // Fetch each collection the page renders and attach it under content[<name>]
@@ -458,6 +462,22 @@ import BaseLayout from '${relativeLayoutImport}';
 import Page from '${relativeVueImport}';
 
 const strapiUrl = import.meta.env.PUBLIC_STRAPI_URL || 'http://localhost:1337';
+// Strapi returns media fields as objects ({ url, mime, ... }); the templates
+// bind them straight into :src/:href, so flatten media objects to their
+// absolute URL string. Link components ({ url, text }) have no mime/formats,
+// so they're left intact.
+function resolveStrapiMedia(value: any): any {
+  if (Array.isArray(value)) return value.map(resolveStrapiMedia);
+  if (value && typeof value === 'object') {
+    if (typeof value.url === 'string' && (value.mime || value.formats || value.provider)) {
+      return value.url.startsWith('http') ? value.url : strapiUrl + value.url;
+    }
+    const out: Record<string, any> = {};
+    for (const [k, v] of Object.entries(value)) out[k] = resolveStrapiMedia(v);
+    return out;
+  }
+  return value;
+}
 let content: Record<string, any> = {};
 try {
   const response = await fetch(\`\${strapiUrl}/api/${pageName}?populate=*\`);
@@ -468,6 +488,7 @@ try {
 } catch (error) {
   console.warn('[SeeMS] Could not fetch Strapi content for "${pageName}":', error instanceof Error ? error.message : error);
 }
+content = resolveStrapiMedia(content);
 ---
 <BaseLayout title="${safeTitle}" wfPage="${safeWfPage}" wfSite="${safeWfSite}" bodyClass="${safeBodyClass}">
   <Page content={content} />${pageScriptsSlot}
