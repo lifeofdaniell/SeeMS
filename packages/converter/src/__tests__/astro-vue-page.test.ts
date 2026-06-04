@@ -71,6 +71,19 @@ describe("writeAstroVuePage", () => {
     }
   });
 
+  it("pluralizes the collection route when the key doesn't end in 's' (board → boards)", async () => {
+    const dir = await tmpDir();
+    try {
+      await writeAstroVuePage(dir, "governance.html", "governance", {}, false, ["board"]);
+      const out = await fs.readFile(path.join(dir, "src/pages/governance.astro"), "utf-8");
+      expect(out).toContain("/api/boards?populate=*"); // matches schema pluralName
+      expect(out).not.toContain("/api/board?populate=*");
+      expect(out).toContain("content['board']"); // stored under the key the Vue binds
+    } finally {
+      await fs.remove(dir);
+    }
+  });
+
   it("omits the editor import when the editor is disabled", async () => {
     const dir = await tmpDir();
     try {

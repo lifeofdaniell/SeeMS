@@ -272,7 +272,7 @@ export async function transformVueToReactive(
     // Astro SSR: content arrives as a prop from the Astro page frontmatter.
     // No composable needed — the Astro page fetches from Strapi server-side.
     const componentImports = componentNames
-      .map((name) => `import ${name} from '~/components/${name}.vue';`)
+      .map((name) => `import ${name} from '~/src/components/${name}.vue';`)
       .join("\n");
     scriptSetup = `<script setup lang="ts">
 // Auto-generated — content is passed from the Astro page (server-side Strapi fetch)
