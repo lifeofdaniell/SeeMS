@@ -13,5 +13,6 @@ export { generateSchemas } from './generator';
 export { manifestToSchemas, getLinkComponentSchema, LINK_COMPONENT_SCHEMA } from './transformer';
 export { setupBoilerplate } from './boilerplate';
 export { transformAllVuePages } from './vue-transformer';
+export { runExtractCollections, runExtractComponent } from './extract';
 export { extractSharedComponents, parseAllPages, findSharedSections } from './component-extractor';
 export type { ConversionOptions, ConversionReport, SeeMSConfig, SharedComponent } from '@see-ms/types';

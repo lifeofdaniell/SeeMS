@@ -1,5 +1,41 @@
 import { describe, it, expect } from "vitest";
-import { upgradeLongStringFieldsToText, LINK_COMPONENT_SCHEMA } from "../transformer";
+import { upgradeLongStringFieldsToText, LINK_COMPONENT_SCHEMA, manifestToSchemas } from "../transformer";
+
+describe("collection schema names — singular must differ from plural (Strapi unicity)", () => {
+  const build = (collName: string) => {
+    const manifest = {
+      version: 1,
+      pages: {
+        p: {
+          route: "/p",
+          fields: {},
+          collections: {
+            [collName]: { selector: "." + collName, fields: { name: { type: "plain", selector: ".n" } } },
+          },
+        },
+      },
+    } as any;
+    return manifestToSchemas(manifest).contentTypes[collName].info;
+  };
+
+  it("suffixes the singular when the collection name doesn't end in 's' (e.g. 'board')", () => {
+    const info = build("board");
+    expect(info.pluralName).toBe("board"); // route stays stable
+    expect(info.singularName).not.toBe(info.pluralName);
+  });
+
+  it("singularizes cleanly when the name ends in 's'", () => {
+    const info = build("members");
+    expect(info.pluralName).toBe("members");
+    expect(info.singularName).toBe("member");
+  });
+
+  it("handles underscored multi-word names without singular==plural", () => {
+    const info = build("clock_card");
+    expect(info.pluralName).toBe("clock-card");
+    expect(info.singularName).not.toBe(info.pluralName);
+  });
+});
 
 const long = "x".repeat(300);
 const short = "hello";

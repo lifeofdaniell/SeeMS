@@ -17,18 +17,17 @@ import path from 'path';
 import pc from 'picocolors';
 import fs from 'fs-extra';
 import * as cheerio from 'cheerio';
-import { glob } from 'glob';
 
 import { loadConversionState, writeConversionState, hashSourceFiles } from './conversion-state';
 import { generateManifest, generateManifestFromHtmlMap, writeManifest, readManifest } from './manifest';
-import { manifestToSchemas, getLinkComponentSchema } from './transformer';
+import { manifestToSchemas, getLinkComponentSchema, upgradeLongStringFieldsToText } from './transformer';
 import { writeAllSchemas, writeAllComponentSchemas, clearGeneratedSchemas, createStrapiReadme, writeLinkComponentSchema } from './schema-writer';
 import { extractAllContent, formatForStrapi } from './content-extractor';
 import { writeSeedData, createSeedReadme } from './seed-writer';
 import {
   scanAssets, findHTMLFiles, readHTMLFile,
   writeVueComponent, formatVueFiles,
-  generateBaseLayout, writeAstroVuePage,
+  generateBaseLayout, writeAstroVuePage, sharedComponentsDir,
 } from './filesystem';
 import { getPageRouteInfo, htmlPathToPageId } from './routes';
 import { loadSeeMSConfig, writeSeeMSConfig, normalizeConfig, mergeConfig, minimalConfig } from './config';
@@ -83,14 +82,6 @@ function buildPageRoutes(htmlFiles: string[]): Record<string, string> {
       return [info.pageId, info.route];
     })
   );
-}
-
-/** Scan the components/ dir and return a list of existing component names. */
-async function getExistingComponentNames(projectDir: string): Promise<string[]> {
-  const componentsDir = path.join(projectDir, 'components');
-  if (!(await fs.pathExists(componentsDir))) return [];
-  const files = await glob('*.vue', { cwd: componentsDir });
-  return files.map(f => f.replace(/\.vue$/, ''));
 }
 
 /**
@@ -222,6 +213,16 @@ async function regenerateSchemasAndSeed(
   await clearGeneratedSchemas(projectDir);
 
   const { contentTypes, componentSchemas } = manifestToSchemas(manifest);
+
+  // Build seed data BEFORE writing schemas so we can apply the same safety net
+  // the convert path uses: promote string→text where content would overflow
+  // varchar(255). Without this, re-extracting reverts long fields to `string`
+  // and seeding 500s. (Seed content is the only place the lengths are known.)
+  const extracted = extractAllContent(htmlContentMap, manifest);
+  const seedData = formatForStrapi(extracted);
+  const promoted = upgradeLongStringFieldsToText(contentTypes, seedData);
+  if (promoted > 0) console.log(pc.dim(`  ✓ Promoted ${promoted} long string field(s) to text`));
+
   await writeAllSchemas(projectDir, contentTypes);
   await writeAllComponentSchemas(projectDir, componentSchemas);
   await createStrapiReadme(projectDir);
@@ -230,8 +231,6 @@ async function regenerateSchemasAndSeed(
   if (provider === 'strapi') await createStrapiBootstrap(projectDir);
   console.log(pc.green(`  ✓ ${Object.keys(contentTypes).length} Strapi content types`));
 
-  const extracted = extractAllContent(htmlContentMap, manifest);
-  const seedData = formatForStrapi(extracted);
   await writeSeedData(projectDir, seedData);
   await createSeedReadme(projectDir);
   const pagesWithContent = Object.keys(manifest.pages).filter(k => {
@@ -342,7 +341,7 @@ export async function runExtractCollections(
     collectionNames,
     collectionChildren,
     sharedComponents,
-    componentsDir: path.join(projectDir, 'components'),
+    componentsDir: sharedComponentsDir(projectDir, target),
     ignoreSelectors: mergedConfig.ignore?.selectors,
     ignoreClasses: mergedConfig.ignore?.classes,
     provider: provider as any,
@@ -368,7 +367,7 @@ export async function runExtractCollections(
     ? path.join(projectDir, 'src', 'components', 'pages')
     : path.join(projectDir, 'pages');
   await transformAllVuePages(vueDir, manifest, { target });
-  await transformSharedComponentsToReactive(path.join(projectDir, 'components'), manifest, { target });
+  await transformSharedComponentsToReactive(sharedComponentsDir(projectDir, target), manifest, { target });
   console.log(pc.green(`  ✓ Reactive bindings applied`));
 
   // Composables
@@ -467,7 +466,7 @@ export async function runExtractComponent(
   console.log(pc.green(`  ✓ Found "${selector}" on ${pagesWithComponent.length} page(s): ${pagesWithComponent.join(', ')}`));
 
   // Write the component Vue file (static for now; transformer will add bindings)
-  const componentsDir = path.join(projectDir, 'components');
+  const componentsDir = sharedComponentsDir(projectDir, target);
   await fs.ensureDir(componentsDir);
   const componentFilePath = path.join(componentsDir, `${componentName}.vue`);
 
@@ -601,7 +600,6 @@ export async function runExtractComponent(
   await regenerateSchemasAndSeed(projectDir, manifest, originalHtmlContentMap, provider);
 
   // Update config + state
-  const existingComponentNames = await getExistingComponentNames(projectDir);
   const updatedConfig: SeeMSConfig = minimalConfig({
     ...loadedConfig,
     components: {
