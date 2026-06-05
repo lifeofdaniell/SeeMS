@@ -316,7 +316,7 @@ program
       }));
       let generateContent = true;
       let enableEditor = options.editor !== false && loadedConfig.editor?.enabled !== false;
-      let target = toProjectTarget(options.target || loadedConfig.target);
+      let target = toProjectTarget(options.target || loadedConfig.target || "astro-vue");
       let cmsProvider = options.cms || loadedConfig.cms?.provider || "strapi";
       let detectComponents = options.extract !== false && loadedConfig.components?.enabled !== false;
       let componentMatch = loadedConfig.components?.match || "structure";
@@ -327,8 +327,8 @@ program
       // Prompt for collections (unless skipped or provided via CLI)
       if (!skipPrompts) {
         target = toProjectTarget(await select(pc.cyan("🎯 What are you converting to?"), [
-          { label: "Nuxt 3", value: "nuxt" },
-          { label: "Astro + Vue", value: "astro-vue" }
+          { label: "Astro + Vue", value: "astro-vue" },
+          { label: "Nuxt 3", value: "nuxt" }
         ], target));
 
         cmsProvider = await select(pc.cyan("🧠 Which CMS provider?"), [
