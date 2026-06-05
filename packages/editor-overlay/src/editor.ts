@@ -13,6 +13,19 @@ export interface EnhancedEditorConfig extends EditorConfig {
   currentPage?: string;
 }
 
+/**
+ * The Nth non-empty direct text node of an element. Mirrors the manifest's
+ * `textNodeIndex` convention so the overlay edits the exact text run a field
+ * maps to (e.g. one line of a <br>-split heading) without touching siblings.
+ */
+function getNthTextNode(element: HTMLElement, index: number): Text | null {
+  const runs: Text[] = [];
+  element.childNodes.forEach((n) => {
+    if (n.nodeType === Node.TEXT_NODE && (n.nodeValue || "").trim()) runs.push(n as Text);
+  });
+  return runs[index] || null;
+}
+
 export function initEditor(config: EnhancedEditorConfig): EditorInstance {
   const highlighter = new Highlighter();
   const editableElements = new Map<HTMLElement, EditableElement>();
@@ -75,6 +88,9 @@ export function initEditor(config: EnhancedEditorConfig): EditorInstance {
               text: linkEl?.textContent?.trim() || "",
               newTab: linkEl?.getAttribute("target") === "_blank"
             };
+          } else if (typeof field.textNodeIndex === "number") {
+            // Field maps to one direct text run, not the whole element.
+            originalValue = (getNthTextNode(element, field.textNodeIndex)?.nodeValue || "").trim();
           } else {
             originalValue = element.textContent || "";
           }
@@ -88,7 +104,8 @@ export function initEditor(config: EnhancedEditorConfig): EditorInstance {
             currentValue: fieldType === "link"
               ? { ...(originalValue as LinkFieldValue) }
               : originalValue as string,
-            isDirty: false
+            isDirty: false,
+            textNodeIndex: field.textNodeIndex,
           });
         });
       });
@@ -167,9 +184,41 @@ export function initEditor(config: EnhancedEditorConfig): EditorInstance {
       startImageEdit(element, elementData);
     } else if (elementData.fieldType === "link") {
       startLinkEdit(element, elementData);
+    } else if (typeof elementData.textNodeIndex === "number") {
+      // Field is one text run of a multi-part element (e.g. a <br>-split heading
+      // or text beside a styled <span>). Edit just that run.
+      startTextNodeEdit(elementData);
     } else {
       // Handle text, plain, and rich field types
       startTextEdit(element, elementData);
+    }
+  }
+
+  /**
+   * Edit a single direct text run of an element (textNodeIndex field).
+   * Uses a prompt rather than contenteditable so editing one run can't disturb
+   * sibling runs or inline markup in the same element.
+   */
+  function startTextNodeEdit(data: EditableElement): void {
+    const node = getNthTextNode(data.element, data.textNodeIndex!);
+    const currentValue = (node?.nodeValue || "").trim();
+    const next = window.prompt("Edit text", currentValue);
+    if (next == null || next === currentValue) return;
+
+    if (node) {
+      // Preserve the run's surrounding whitespace (the separator before/after a
+      // sibling) so spacing/line breaks survive.
+      const raw = node.nodeValue || "";
+      const m = raw.match(/^(\s*)[\s\S]*?(\s*)$/);
+      node.nodeValue = `${m ? m[1] : ""}${next}${m ? m[2] : ""}`;
+    }
+
+    data.currentValue = next;
+    data.isDirty = true;
+    updateReactiveState(data.fieldName, next);
+
+    if (config.draftStorage && currentPage) {
+      saveToDraft(data.fieldName, next);
     }
   }
 
@@ -665,6 +714,13 @@ export function initEditor(config: EnhancedEditorConfig): EditorInstance {
             } else {
               linkEl.removeAttribute("target");
             }
+          }
+        } else if (typeof data.textNodeIndex === "number") {
+          const node = getNthTextNode(data.element, data.textNodeIndex);
+          if (node) {
+            const raw = node.nodeValue || "";
+            const m = raw.match(/^(\s*)[\s\S]*?(\s*)$/);
+            node.nodeValue = `${m ? m[1] : ""}${data.originalValue as string}${m ? m[2] : ""}`;
           }
         } else {
           data.element.textContent = data.originalValue as string;

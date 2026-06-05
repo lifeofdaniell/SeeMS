@@ -70,4 +70,8 @@ export interface EditableElement {
   /** Current value - can be string or LinkFieldValue for link fields */
   currentValue: string | LinkFieldValue;
   isDirty: boolean;
+  /** When set, this field maps to the Nth non-empty direct text node of
+   *  `element` (a heading split by <br> / wrapping an inline <span>), so edits
+   *  target that text run instead of the element's whole content. */
+  textNodeIndex?: number;
 }

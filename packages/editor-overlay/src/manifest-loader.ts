@@ -7,6 +7,9 @@ export interface ManifestField {
   selector: string;
   type: string;
   editable: boolean;
+  /** When set, this field is the Nth non-empty direct text run of `selector`'s
+   *  element (headings split by <br> / wrapping an inline <span>). */
+  textNodeIndex?: number;
 }
 
 export interface ManifestPage {

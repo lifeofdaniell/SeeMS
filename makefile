@@ -39,7 +39,7 @@ convert:
 extract-collections:
 	$(CLI) extract collections $(DIR)
 
-extract-components:
+extract-component:
 	$(CLI) extract components $(DIR)
 
 setup-strapi:
