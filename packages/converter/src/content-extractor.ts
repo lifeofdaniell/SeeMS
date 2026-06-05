@@ -182,7 +182,14 @@ export function extractContentFromHTML(
  */
 export function extractAllContent(
     htmlFiles: Map<string, string>,
-    manifest: CMSManifest
+    manifest: CMSManifest,
+    // Shared components (nav/footer) are detected from their .vue templates, so
+    // their field selectors target the original section markup. When the page
+    // map passed as `htmlFiles` has that markup replaced by <Component/> tags
+    // (the `extract components` path), extracting against it yields nothing.
+    // Callers can pass the pristine HTML here so component seed still resolves;
+    // it defaults to `htmlFiles` for callers that already pass original HTML.
+    componentHtmlFiles: Map<string, string> = htmlFiles
 ): ExtractedContent & { manifest: CMSManifest } {
     const extractedContent: ExtractedContent = {
         pages: {},
@@ -219,7 +226,7 @@ export function extractAllContent(
         const fields = c.fields || {};
         if (Object.keys(fields).length === 0) continue;
         const pageId = (c.pages && c.pages[0]) || Object.keys(manifest.pages)[0];
-        const html = pageId ? htmlFiles.get(pageId) : undefined;
+        const html = pageId ? componentHtmlFiles.get(pageId) : undefined;
         if (!html) continue;
         const typeName = sharedComponentTypeName(compName);
         extractedContent.components[typeName] = extractContentFromHTML(html, typeName, {

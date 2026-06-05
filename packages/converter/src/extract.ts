@@ -207,7 +207,11 @@ async function regenerateSchemasAndSeed(
   projectDir: string,
   manifest: Awaited<ReturnType<typeof generateManifest>>,
   htmlContentMap: Map<string, string>,
-  provider: string
+  provider: string,
+  // Pristine HTML for shared-component (nav/footer) seed extraction. When the
+  // page map above has those sections replaced by component tags, their seed
+  // must come from the original markup instead. Defaults to htmlContentMap.
+  originalHtmlContentMap: Map<string, string> = htmlContentMap
 ): Promise<void> {
   // Clear stale schemas before writing fresh ones so renamed / removed
   // collections don't leave orphaned files that confuse Strapi.
@@ -219,7 +223,7 @@ async function regenerateSchemasAndSeed(
   // the convert path uses: promote string→text where content would overflow
   // varchar(255). Without this, re-extracting reverts long fields to `string`
   // and seeding 500s. (Seed content is the only place the lengths are known.)
-  const extracted = extractAllContent(htmlContentMap, manifest);
+  const extracted = extractAllContent(htmlContentMap, manifest, originalHtmlContentMap);
   const seedData = formatForStrapi(extracted);
   const promoted = upgradeLongStringFieldsToText(contentTypes, seedData);
   if (promoted > 0) console.log(pc.dim(`  ✓ Promoted ${promoted} long string field(s) to text`));
@@ -620,7 +624,7 @@ export async function runExtractComponent(
   // from (htmlContentMap), not the pristine original — otherwise the positional
   // selectors point at the wrong elements (see manifest generation note above).
   console.log(pc.blue('\n📋 Regenerating schemas and seed data...'));
-  await regenerateSchemasAndSeed(projectDir, manifest, htmlContentMap, provider);
+  await regenerateSchemasAndSeed(projectDir, manifest, htmlContentMap, provider, originalHtmlContentMap);
 
   // Update config + state
   const updatedConfig: SeeMSConfig = minimalConfig({

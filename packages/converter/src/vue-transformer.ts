@@ -256,8 +256,14 @@ export async function transformVueToReactive(
   const componentNames = Object.keys(manifest.global?.components || {});
   const templateContent = maskComponentTags(templateMatch[1], componentNames);
 
-  // Load template content (cheerio will wrap in html/body, we'll strip it later)
-  const $ = cheerio.load(templateContent, { xmlMode: false });
+  // Wrap the template in a sentinel root before parsing. A component marker
+  // comment that is the first node of the template (e.g. a nav extracted from
+  // the very top of <body>) would otherwise be hoisted *outside* <html> by the
+  // HTML parser, and then dropped when we slice the body out below — leaving the
+  // component imported but never rendered (the nav silently disappears). Keeping
+  // everything inside one element preserves every node, comments included.
+  const ROOT_ATTR = "data-seems-root";
+  const $ = cheerio.load(`<div ${ROOT_ATTR}>${templateContent}</div>`, { xmlMode: false });
 
   // Transform collections first (they contain fields)
   if (pageManifest.collections) {
@@ -277,20 +283,10 @@ export async function transformVueToReactive(
     });
   }
 
-  // Get transformed template - extract from body if cheerio wrapped it
-  let transformedTemplate = $.html();
-
-  // Remove cheerio's auto-added html/head/body wrapper tags
-  const bodyMatch = transformedTemplate.match(/<body>([\s\S]*)<\/body>/);
-  if (bodyMatch) {
-    transformedTemplate = bodyMatch[1];
-  }
-
-  // Also clean up any remaining html/head tags
-  transformedTemplate = transformedTemplate
-    .replace(/<\/?html[^>]*>/gi, "")
-    .replace(/<head><\/head>/gi, "")
-    .trim();
+  // Get the transformed template back out of the sentinel wrapper. Reading the
+  // wrapper's inner HTML keeps leading/trailing comment markers that the parser
+  // would push outside <body>, and yields no html/head/body tags to strip.
+  let transformedTemplate = ($(`[${ROOT_ATTR}]`).html() ?? "").trim();
 
   // Remove the single wrapper <div> if it exists (from htmlToVueComponent)
   // This regex matches a div that wraps all the content
