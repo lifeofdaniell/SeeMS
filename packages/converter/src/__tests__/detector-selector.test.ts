@@ -5,6 +5,7 @@ import {
   buildFullPath,
   buildRobustSelector,
   isEditableLeaf,
+  isInlineTextContainer,
   determineFieldType,
   detectEditableFields,
 } from "../detector";
@@ -167,6 +168,63 @@ describe("buildRobustSelector — class-anchored & structure-resilient", () => {
     const sel = buildRobustSelector($, $target);
     expect($(sel).length).toBe(1);
     expect($(sel).text().trim()).toBe("NavTwo");
+  });
+});
+
+describe("isInlineTextContainer — mixed text + inline children", () => {
+  const $h2 = (html: string) => {
+    const $ = cheerio.load(`<body>${html}</body>`);
+    return { $, $el: $("h2") };
+  };
+
+  it("is true for a heading with its own text plus an inline span", () => {
+    const { $, $el } = $h2(`<h2>Our <span class="text-red">Core Values</span></h2>`);
+    expect(isInlineTextContainer($, $el)).toBe(true);
+  });
+
+  it("is true when the text comes after the inline child", () => {
+    const { $, $el } = $h2(`<h2><span class="text-red">Recognised</span> For Excellence</h2>`);
+    expect(isInlineTextContainer($, $el)).toBe(true);
+  });
+
+  it("is false for a plain leaf (no child elements)", () => {
+    const { $, $el } = $h2(`<h2>Just text</h2>`);
+    expect(isInlineTextContainer($, $el)).toBe(false);
+  });
+
+  it("is false when the element wraps the text in a single span (no orphan)", () => {
+    const { $, $el } = $h2(`<h2><span class="text-red">All Red</span></h2>`);
+    expect(isInlineTextContainer($, $el)).toBe(false);
+  });
+
+  it("is false for block-level children (a real structural container)", () => {
+    const { $, $el } = $h2(`<h2>Label<div class="card">x</div></h2>`);
+    expect(isInlineTextContainer($, $el)).toBe(false);
+  });
+
+  it("is false for more than one direct text run (can't be one field)", () => {
+    const { $, $el } = $h2(`<h2>Our Reach<br>& Local Mastery</h2>`);
+    expect(isInlineTextContainer($, $el)).toBe(false);
+  });
+
+  it("yields TWO fields — parent's own text + the span — for a mixed heading", () => {
+    const html = `<body><h2 class="uc-h2">Our <span class="text-red">Core Values</span></h2></body>`;
+    const { fields } = detectEditableFields(html);
+    const $ = cheerio.load(html);
+
+    const values = Object.values(fields).map((f) => {
+      const $el = $(f.selector);
+      // plain extraction = direct text only
+      return $el.clone().children().remove().end().text().trim();
+    });
+
+    expect(values).toContain("Our"); // the previously-orphaned parent text
+    expect(values).toContain("Core Values"); // the styled span, still its own field
+
+    // Every selector resolves to exactly one element.
+    for (const f of Object.values(fields)) {
+      expect($(f.selector).length).toBe(1);
+    }
   });
 });
 
