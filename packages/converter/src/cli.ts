@@ -318,7 +318,11 @@ program
       let enableEditor = options.editor !== false && loadedConfig.editor?.enabled !== false;
       let target = toProjectTarget(options.target || loadedConfig.target || "astro-vue");
       let cmsProvider = options.cms || loadedConfig.cms?.provider || "strapi";
-      let detectComponents = options.extract !== false && loadedConfig.components?.enabled !== false;
+      // Shared-component extraction is owned by the dedicated `extract` commands
+      // (the vetted engine). Convert no longer prompts for or runs inline
+      // detection — it's a no-op for astro and unvetted for nuxt. Run
+      // `extract components` / `extract collections` after converting.
+      let detectComponents = false;
       let componentMatch = loadedConfig.components?.match || "structure";
       let componentMinOccurrences = loadedConfig.components?.minOccurrences || 2;
       let componentMinPages = loadedConfig.components?.minPages || componentMinOccurrences;
@@ -335,7 +339,12 @@ program
           { label: "Strapi", value: "strapi" }
         ], cmsProvider);
 
-        if (options.extract !== false) {
+        // Shared-component extraction is owned by the dedicated `extract`
+        // commands for now (see `detectComponents` above). The prompt below is
+        // intentionally kept but disabled — flip ENABLE_COMPONENT_PROMPT to
+        // re-enable once the convert-time path is vetted. Don't delete it.
+        const ENABLE_COMPONENT_PROMPT = false as boolean;
+        if (ENABLE_COMPONENT_PROMPT && options.extract !== false) {
           detectComponents = await confirm(pc.cyan("Extract shared components from repeated sections?"), detectComponents);
           if (detectComponents) {
             componentMatch = await select(pc.cyan("🧩 How strict should component matching be?"), [
@@ -348,6 +357,11 @@ program
           }
         }
 
+        // Collection extraction is also owned by the dedicated `extract`
+        // commands for now. The interactive prompt is kept but disabled — flip
+        // ENABLE_COLLECTION_PROMPT to re-enable. CLI `--collection-classes` and
+        // config hints still work; only the wizard prompt is skipped.
+        const ENABLE_COLLECTION_PROMPT = false as boolean;
         if (options.collectionClasses) {
           // Parse CLI option
           const classes = options.collectionClasses.split(",").map((c: string) => c.trim());
@@ -355,7 +369,7 @@ program
             className,
             collectionName: classToCollectionName(className)
           }));
-        } else if (collections.length === 0 && options.extract !== false) {
+        } else if (ENABLE_COLLECTION_PROMPT && collections.length === 0 && options.extract !== false) {
           collections = await promptForCollections();
         } else if (collections.length > 0) {
           console.log(pc.dim(`Using ${collections.length} collection hint(s) from config.`));
@@ -403,7 +417,11 @@ program
       console.log(pc.green("✓ Configuration:"));
       console.log(pc.dim(`  • Target: ${target === "astro-vue" ? "Astro + Vue" : "Nuxt 3"}`));
       console.log(pc.dim(`  • CMS: ${cmsProvider}`));
-      console.log(pc.dim(`  • Component matching: ${componentMatch}, ${componentMinOccurrences}+ occurrences on ${componentMinPages}+ pages`));
+      if (detectComponents) {
+        console.log(pc.dim(`  • Component matching: ${componentMatch}, ${componentMinOccurrences}+ occurrences on ${componentMinPages}+ pages`));
+      } else {
+        console.log(pc.dim(`  • Shared components: run 'extract components' / 'extract collections' after converting`));
+      }
       if (componentRules.length > 0) {
         console.log(pc.dim(`  • Component rules: ${componentRules.map(rule => {
           const role = rule.role || "shared-section";
