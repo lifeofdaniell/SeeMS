@@ -325,8 +325,29 @@ export function buildUniqueSelector($: cheerio.CheerioAPI, $el: cheerio.Cheerio<
         }
     }
 
-    // Strategy 4: Build path with nth-of-type (guaranteed unique)
-    return buildFullPath($, $el);
+    // Strategy 4: Anchor a short path to the nearest uniquely-selectable
+    // ancestor (class/id), counting positions only *inside* that subtree.
+    //
+    // PORTED 2026-06-04: previously this returned `buildFullPath($, $el)`, a
+    // positional `div:nth-of-type(...)` path counted from <body>. That path is
+    // unique in the DOM it's built against, but its "brittle span" is the whole
+    // document: any structural change above the element (e.g. extracting a
+    // top-level nav/footer into a component, which is a different DOM than the
+    // one used at extraction time) renumbers the leading `:nth-of-type` indices
+    // and silently repoints the field. That caused real seed corruption (body
+    // content like info_card_value resolving into the announcement bar) — see
+    // the `extract components` DOM-mismatch fix.
+    //
+    // buildRobustSelector confines positional counting to a small, class-
+    // anchored subtree. On the qz export (1,525 fields): root-positional
+    // selectors went 87.3% -> 0%, all 1,525 still resolve uniquely to the same
+    // element. Trade-off: avg selector length 62 -> ~141 chars (manifest only;
+    // does NOT affect Strapi field names/labels).
+    //
+    // REVERT: change the single line below back to `buildFullPath($, $el)`.
+    // buildFullPath is intentionally kept (still exported + unit-tested) so this
+    // is a clean one-line revert.
+    return buildRobustSelector($, $el);
 }
 
 /**
@@ -373,6 +394,118 @@ export function buildFullPath($: cheerio.CheerioAPI, $el: cheerio.Cheerio<any>):
     }
 
     return segments.join(' > ');
+}
+
+// ---------------------------------------------------------------------------
+// buildRobustSelector — class-anchored fallback (ported 2026-06-04)
+//
+// Drop-in replacement for buildFullPath as buildUniqueSelector's last resort.
+// buildFullPath is retained (above) for a clean one-line revert; see the note
+// at buildUniqueSelector's Strategy 4.
+//
+// Strategy: instead of a positional path from <body>, find the nearest ancestor
+// that is *uniquely* selectable (id / class / class-combo) and build the
+// shortest path from there to the element, preferring a class at each hop and
+// using absolute :nth-child only when a class can't disambiguate siblings.
+// Positional counting is therefore confined to a small, stable subtree, so edits
+// elsewhere in the document (or a componentized DOM) can't renumber it.
+//
+// Like buildFullPath, every candidate is constructed to end at $el, so a
+// `length === 1` match is also a correctness guarantee (it can only be $el).
+// ---------------------------------------------------------------------------
+
+/** CSS-escape the characters that appear in Webflow class names. */
+function escapeCssIdentifier(value: string): string {
+    return value.replace(/([:.\[\]])/g, "\\$1");
+}
+
+/** Semantic classes worth using as anchors (drops utility/variant/hash classes). */
+function anchorClasses($el: cheerio.Cheerio<any>): string[] {
+    const cleaned = cleanClassName($el.attr("class") || "");
+    return cleaned
+        .split(" ")
+        .filter((c) => c.length > 1 && !/[0-9a-f]{8}-[0-9a-f]{4}/.test(c));
+}
+
+/** A selector that resolves to exactly this element on its own (id/class), or null. */
+function ownUniqueSelector($: cheerio.CheerioAPI, $el: cheerio.Cheerio<any>): string | null {
+    const tag = ($el.prop("tagName") || "div").toLowerCase();
+
+    const id = $el.attr("id");
+    if (id) {
+        const sel = `#${escapeCssIdentifier(id)}`;
+        if ($(sel).length === 1) return sel;
+    }
+
+    const classes = anchorClasses($el);
+    for (const c of classes) {
+        const sel = `.${escapeCssIdentifier(c)}`;
+        if ($(sel).length === 1) return sel;
+    }
+    for (const c of classes) {
+        const sel = `${tag}.${escapeCssIdentifier(c)}`;
+        if ($(sel).length === 1) return sel;
+    }
+    for (let i = 2; i <= Math.min(classes.length, 3); i++) {
+        const combo = classes.slice(0, i).map((c) => `.${escapeCssIdentifier(c)}`).join("");
+        if ($(combo).length === 1) return combo;
+    }
+    return null;
+}
+
+/** One path hop, class-preferring; falls back to absolute :nth-child position. */
+function pathSegment($el: cheerio.Cheerio<any>): string {
+    const tag = ($el.prop("tagName") || "div").toLowerCase();
+    const $parent = $el.parent();
+    const childIndex = $parent.children().index($el) + 1; // 1-based, absolute
+    const classes = anchorClasses($el);
+
+    if (classes.length) {
+        const c = escapeCssIdentifier(classes[0]);
+        if ($parent.children(`.${c}`).length === 1) return `.${c}`;
+        return `.${c}:nth-child(${childIndex})`;
+    }
+
+    if ($parent.children(tag).length <= 1) return tag;
+    return `${tag}:nth-child(${childIndex})`;
+}
+
+/** Nearest strict ancestor that is uniquely selectable on its own, or null. */
+function nearestUniqueAncestor($: cheerio.CheerioAPI, $el: cheerio.Cheerio<any>): string | null {
+    let $cur = $el.parent();
+    while ($cur.length) {
+        const tag = ($cur.prop("tagName") || "").toLowerCase();
+        if (!tag || tag === "html" || tag === "body") break;
+        const own = ownUniqueSelector($, $cur);
+        if (own) return own;
+        $cur = $cur.parent();
+    }
+    return null;
+}
+
+export function buildRobustSelector($: cheerio.CheerioAPI, $el: cheerio.Cheerio<any>): string {
+    const own = ownUniqueSelector($, $el);
+    if (own) return own;
+
+    const segments: string[] = [];
+    let $cur = $el;
+
+    for (let depth = 0; depth < 25 && $cur.length; depth++) {
+        const tag = ($cur.prop("tagName") || "").toLowerCase();
+        if (!tag || tag === "html" || tag === "body") break;
+
+        segments.unshift(pathSegment($cur));
+
+        const anchor = nearestUniqueAncestor($, $cur);
+        const candidate = (anchor ? `${anchor} ` : "") + segments.join(" > ");
+        if ($(candidate).length === 1) return candidate;
+
+        $cur = $cur.parent();
+    }
+
+    // Exhausted ancestors without a unique anchor (rare). Fall back to the
+    // original positional path so behaviour is never worse than before.
+    return buildFullPath($, $el);
 }
 
 /**

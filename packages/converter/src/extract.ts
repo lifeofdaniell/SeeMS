@@ -561,14 +561,20 @@ export async function runExtractComponent(
   await regeneratePageFiles(htmlFiles, htmlContentMap, originalHtmlContentMap, projectDir, target, assets.css, editorEnabled, pageComponentMap);
   console.log(pc.green(`  ✓ Rebuilt ${htmlFiles.length} pages`));
 
-  // Generate manifest from fresh static files.
-  // For astro-vue: detect fields from src/components/pages/ (the Vue SFCs).
+  // Generate the manifest from the same componentized HTML map we extract seed
+  // data from (below), NOT from the generated .vue files. The .vue files have
+  // the nav/footer replaced by component tags, which shifts the positional
+  // `div:nth-of-type(...)` paths relative to the original HTML — so selectors
+  // built against the .vue DOM landed on the wrong element when read back
+  // against the original HTML at extraction time (e.g. body content resolving
+  // to the announcement bar). Detecting and extracting against one DOM keeps
+  // the selectors valid for both. Matches `extract collections`' behaviour.
   console.log(pc.blue('\n🔍 Detecting CMS fields...'));
   const vueComponentsDir = target === 'astro-vue'
     ? path.join(projectDir, 'src', 'components', 'pages')
     : path.join(projectDir, 'pages');
 
-  const manifest = await generateManifest(vueComponentsDir, {
+  const manifest = await generateManifestFromHtmlMap(htmlContentMap, pageRoutes, {
     collectionClasses,
     collectionNames,
     sharedComponents: allSharedComponents,
@@ -576,7 +582,6 @@ export async function runExtractComponent(
     ignoreSelectors: mergedConfig.ignore?.selectors,
     ignoreClasses: mergedConfig.ignore?.classes,
     provider: provider as any,
-    pageRoutes,
   });
   await writeManifest(projectDir, manifest);
   console.log(pc.green(`  ✓ Manifest updated`));
@@ -611,8 +616,11 @@ export async function runExtractComponent(
   }
 
   // Schemas + seed
+  // Extract against the SAME componentized map the manifest selectors were built
+  // from (htmlContentMap), not the pristine original — otherwise the positional
+  // selectors point at the wrong elements (see manifest generation note above).
   console.log(pc.blue('\n📋 Regenerating schemas and seed data...'));
-  await regenerateSchemasAndSeed(projectDir, manifest, originalHtmlContentMap, provider);
+  await regenerateSchemasAndSeed(projectDir, manifest, htmlContentMap, provider);
 
   // Update config + state
   const updatedConfig: SeeMSConfig = minimalConfig({

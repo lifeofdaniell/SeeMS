@@ -3,6 +3,7 @@ import * as cheerio from "cheerio";
 import {
   buildUniqueSelector,
   buildFullPath,
+  buildRobustSelector,
   isEditableLeaf,
   determineFieldType,
   detectEditableFields,
@@ -103,6 +104,69 @@ describe("buildFullPath — anchored & unique", () => {
     const sel = buildFullPath($, $b);
     expect($(sel).length).toBe(1);
     expect($(sel).text()).toBe("b");
+  });
+});
+
+describe("buildRobustSelector — class-anchored & structure-resilient", () => {
+  // Mirrors the real Webflow bug: repeated cards (.value/.label reused), plus an
+  // earlier block with the same nested-div shape. A positional-from-root path
+  // for a card field collides with the leading block; an anchored one doesn't.
+  const CARDS_HTML = `
+<body>
+  <div class="announce"><div><div>
+    <div class="cell"></div><div class="cell">ANNOUNCEMENT</div>
+  </div></div></div>
+  <div class="content"><div class="cards">
+    <div class="card"><div class="value">A</div><div class="label">LabelA</div></div>
+    <div class="card"><div class="value">B</div><div class="label">LabelB</div></div>
+  </div></div>
+</body>`;
+
+  it("prefers an element's own unique class", () => {
+    const $ = cheerio.load(`<body><h1 class="page-title">x</h1><p class="body">y</p></body>`);
+    expect(buildRobustSelector($, $(".page-title"))).toBe(".page-title");
+  });
+
+  it("anchors a reused-class leaf to the nearest unique ancestor (unique + correct)", () => {
+    const $ = cheerio.load(CARDS_HTML);
+    const $b = $(".card").eq(1).find(".value");
+    const sel = buildRobustSelector($, $b);
+    expect($(sel).length).toBe(1);
+    expect($(sel).text()).toBe("B");
+    // Must carry a class/id anchor — not a bare root `div:nth-of-type(...)` chain.
+    expect(/[.#]/.test(sel.split(">")[0])).toBe(true);
+  });
+
+  it("does not collide with a structurally-similar block earlier in the document", () => {
+    const $ = cheerio.load(CARDS_HTML);
+    const $a = $(".card").eq(0).find(".value");
+    const sel = buildRobustSelector($, $a);
+    expect($(sel).length).toBe(1);
+    expect($(sel).text()).toBe("A");
+  });
+
+  it("survives unrelated structural changes above the element (the regression)", () => {
+    // The whole point: a selector built against one DOM must keep resolving to
+    // the same element after content is inserted/removed elsewhere — the failure
+    // mode that corrupted seed data when a nav was extracted into a component.
+    const $ = cheerio.load(CARDS_HTML);
+    const sel = buildRobustSelector($, $(".card").eq(1).find(".value"));
+
+    const shifted = CARDS_HTML.replace(
+      "<body>",
+      `<body><div class="injected"><div><p>new</p></div></div>`
+    );
+    const $shifted = cheerio.load(shifted);
+    expect($shifted(sel).length).toBe(1);
+    expect($shifted(sel).text()).toBe("B");
+  });
+
+  it("falls back to a unique selector for class-less deep nesting", () => {
+    const $ = cheerio.load(REUSED_CLASS_HTML);
+    const $target = $('[data-test="target"]');
+    const sel = buildRobustSelector($, $target);
+    expect($(sel).length).toBe(1);
+    expect($(sel).text().trim()).toBe("NavTwo");
   });
 });
 
