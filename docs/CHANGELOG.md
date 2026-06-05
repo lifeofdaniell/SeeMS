@@ -2,7 +2,47 @@
 
 All notable changes to the see-ms monorepo will be documented in this file.
 
-## [Unreleased] — feat/astro-native-pages
+## [Unreleased]
+
+### @see-ms/converter — default target, wizard & CMS workflow
+
+#### Changed
+
+- **Default conversion target is now `astro-vue`.** `cms convert` and the
+  interactive wizard default to Astro + Vue. Pass `--target nuxt` (or set
+  `target: "nuxt"` in `see-ms.config.ts`) for the Nuxt path. The wizard lists
+  Astro first with the `default` marker.
+
+- **Component & collection extraction moved to the dedicated `extract`
+  commands.** `cms convert` no longer prompts for *"Extract shared components"*
+  or *"Configure collection types"*, and no longer runs inline shared-component
+  detection. Those prompts are intentionally kept in source but disabled behind
+  `ENABLE_COMPONENT_PROMPT` / `ENABLE_COLLECTION_PROMPT` flags. The supported
+  flow is now: **`convert` → `extract collections` / `extract components`**,
+  which run the vetted extraction engine (`runExtractCollections` /
+  `runExtractComponent`). Convert handles pages, page-level fields, schemas, and
+  seed; the `extract` commands own shared components and collections.
+  - `--collection-classes` and config-driven collection hints still work in
+    `convert`; only the interactive prompt is skipped.
+
+#### Added
+
+- **Astro Node adapter is guaranteed when the editor is enabled.** A new
+  `ensureAstroNodeAdapter` step merges `@astrojs/node` (standalone) into the
+  project's `astro.config.*` and `package.json` even when the boilerplate ships
+  its own config — previously the adapter was only added on the
+  create-from-scratch path, so editor builds (`prerender = false` API routes)
+  failed against cloned/copied boilerplates.
+
+#### Fixed
+
+- **Footer / nav content types now seed.** `extract components` extracted seed
+  data from the *componentized* page HTML — where the shared section's markup
+  had already been replaced by a `<Component/>` tag — so footer/nav field
+  selectors matched nothing and their seed came out empty (schema present, seed
+  missing). Shared-component seed is now extracted from the original markup via
+  a `componentHtmlFiles` map threaded through `extractAllContent` →
+  `regenerateSchemasAndSeed`.
 
 ### @see-ms/converter — Astro target rewrite
 
