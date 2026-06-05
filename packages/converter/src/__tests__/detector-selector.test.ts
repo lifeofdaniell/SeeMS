@@ -202,9 +202,30 @@ describe("isInlineTextContainer — mixed text + inline children", () => {
     expect(isInlineTextContainer($, $el)).toBe(false);
   });
 
-  it("is false for more than one direct text run (can't be one field)", () => {
+  it("is true for multiple direct text runs split by <br>", () => {
     const { $, $el } = $h2(`<h2>Our Reach<br>& Local Mastery</h2>`);
-    expect(isInlineTextContainer($, $el)).toBe(false);
+    expect(isInlineTextContainer($, $el)).toBe(true);
+  });
+
+  it("yields one indexed plain field per <br>-split text run", () => {
+    const html = `<body><h2 class="uc-h2">Our Reach<br>&amp; Local Mastery</h2></body>`;
+    const { fields } = detectEditableFields(html);
+    const entries = Object.values(fields).filter((f) => typeof f.textNodeIndex === "number");
+
+    // Two runs → two fields with textNodeIndex 0 and 1, same selector.
+    expect(entries.map((f) => f.textNodeIndex).sort()).toEqual([0, 1]);
+    expect(new Set(entries.map((f) => f.selector)).size).toBe(1);
+
+    const $ = cheerio.load(html);
+    const runText = (idx: number) => {
+      const el: any = $(entries[0].selector)[0];
+      const runs = el.children.filter(
+        (n: any) => n.type === "text" && typeof n.data === "string" && n.data.trim()
+      );
+      return String(runs[idx].data).replace(/\s+/g, " ").trim();
+    };
+    expect(runText(0)).toBe("Our Reach");
+    expect(runText(1)).toBe("& Local Mastery");
   });
 
   it("yields TWO fields — parent's own text + the span — for a mixed heading", () => {

@@ -30,25 +30,33 @@ function isSafeToEmpty($el: cheerio.Cheerio<any>): boolean {
  * plain fields without destroying the styled span. No-op if there is no direct
  * text node to replace, so it's safe for any plain field.
  */
-function bindPlainText($el: cheerio.Cheerio<any>, expr: string): void {
+function bindPlainText($el: cheerio.Cheerio<any>, expr: string, textNodeIndex?: number): void {
+  if (typeof textNodeIndex === "number") {
+    replaceDirectTextNode($el, expr, textNodeIndex);
+    return;
+  }
   if (isSafeToEmpty($el)) {
     $el.empty();
     $el.text(expr);
     return;
   }
-  replaceDirectTextNode($el, expr);
+  replaceDirectTextNode($el, expr, 0);
 }
 
-/** Replace the element's first non-empty direct text node, preserving the
+/** Replace the element's Nth non-empty direct text node, preserving the
  *  surrounding whitespace (so the separator before/after a sibling survives). */
-function replaceDirectTextNode($el: cheerio.Cheerio<any>, expr: string): void {
+function replaceDirectTextNode($el: cheerio.Cheerio<any>, expr: string, index: number): void {
   const el: any = $el[0];
   if (!el || !Array.isArray(el.children)) return;
+  let count = 0;
   for (const node of el.children) {
     if (node.type === "text" && typeof node.data === "string" && node.data.trim()) {
-      const m = node.data.match(/^(\s*)[\s\S]*?(\s*)$/);
-      node.data = `${m ? m[1] : ""}${expr}${m ? m[2] : ""}`;
-      return;
+      if (count === index) {
+        const m = node.data.match(/^(\s*)[\s\S]*?(\s*)$/);
+        node.data = `${m ? m[1] : ""}${expr}${m ? m[2] : ""}`;
+        return;
+      }
+      count++;
     }
   }
 }
@@ -60,7 +68,8 @@ function replaceWithBinding(
   _$: cheerio.CheerioAPI,
   $el: cheerio.Cheerio<any>,
   fieldName: string,
-  type: string
+  type: string,
+  textNodeIndex?: number
 ): void {
   if (type === "image") {
     // Check if element is an img or contains an img
@@ -102,9 +111,10 @@ function replaceWithBinding(
     $el.empty(); // Remove static content
   } else {
     // Plain text. For a leaf this empties + sets {{ }}; for an element that also
-    // has child elements (e.g. a heading with a styled <span>) it replaces only
-    // the element's own text node, leaving the children and their fields intact.
-    bindPlainText($el, `{{ content.${fieldName} }}`);
+    // has child elements (e.g. a heading with a styled <span> or a <br> split) it
+    // replaces only the targeted direct text node, leaving the children and their
+    // fields intact.
+    bindPlainText($el, `{{ content.${fieldName} }}`, textNodeIndex);
   }
 }
 
@@ -262,7 +272,7 @@ export async function transformVueToReactive(
       const $elements = $(field.selector);
       $elements.each((_, el) => {
         const $el = $(el);
-        replaceWithBinding($, $el, fieldName, field.type);
+        replaceWithBinding($, $el, fieldName, field.type, field.textNodeIndex);
       });
     });
   }
@@ -361,11 +371,11 @@ export async function transformSharedComponentsToReactive(
         : fieldName;
       const selector = field.selector;
       $(selector).each((_, el) => {
-        replaceWithBinding($, $(el), fieldName, field.type);
+        replaceWithBinding($, $(el), fieldName, field.type, field.textNodeIndex);
       });
       if (originalName !== fieldName) {
         $(selector).each((_, el) => {
-          replaceWithBinding($, $(el), fieldName, field.type);
+          replaceWithBinding($, $(el), fieldName, field.type, field.textNodeIndex);
         });
       }
     });

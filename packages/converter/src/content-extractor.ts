@@ -63,6 +63,20 @@ function extractFieldText($element: cheerio.Cheerio<any>, fieldType?: string): s
 }
 
 /**
+ * Text of the Nth non-empty direct text node of an element. Mirrors the
+ * textNodeIndex convention used by the detector/renderer/editor.
+ */
+function nthDirectTextRun($element: cheerio.Cheerio<any>, index: number): string {
+    const el: any = $element[0];
+    if (!el || !Array.isArray(el.children)) return '';
+    const runs = el.children.filter(
+        (n: any) => n.type === 'text' && typeof n.data === 'string' && n.data.trim().length > 0
+    );
+    const node = runs[index];
+    return node ? String(node.data).replace(/\s+/g, ' ').trim() : '';
+}
+
+/**
  * Extract content from HTML based on manifest selectors
  */
 export function extractContentFromHTML(
@@ -96,6 +110,9 @@ export function extractContentFromHTML(
                     if (linkElement.length > 0) {
                         content.fields[fieldName] = extractLinkValue(linkElement);
                     }
+                } else if (typeof field.textNodeIndex === 'number') {
+                    // Field is a specific direct text run of the element.
+                    content.fields[fieldName] = nthDirectTextRun(element, field.textNodeIndex);
                 } else {
                     // Extract text content (direct text only for plain fields)
                     content.fields[fieldName] = extractFieldText(element, field.type);

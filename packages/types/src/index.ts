@@ -45,6 +45,15 @@ export interface FieldMapping {
   source?: 'auto' | 'attribute';
   /** Attribute to extract value from (e.g., 'src' for images, 'href' for links) */
   attribute?: string;
+  /**
+   * When set, this field is the Nth non-empty *direct* text run of the element
+   * matched by `selector`, rather than the element's whole text. Used for
+   * elements that mix their own text with inline children — e.g. a heading split
+   * by `<br>` or wrapping a coloured `<span>` — so each text run is its own
+   * plain field while the inline markup stays static. Index counts only
+   * non-whitespace direct text nodes, 0-based.
+   */
+  textNodeIndex?: number;
   /** Provider-specific mapping metadata. Keep optional so the core manifest remains portable. */
   providers?: Record<string, Record<string, unknown>>;
 }

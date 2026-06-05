@@ -232,14 +232,14 @@ const INLINE_TEXT_TAGS = new Set([
  * styling that the <span> exists for is preserved as static structure. Without
  * this the parent's text is orphaned as uneditable static DOM.
  *
+ * Each non-empty direct text run becomes its own plain field (addressed by
+ * `textNodeIndex`), so a heading split by `<br>` yields one field per line while
+ * the `<br>` and any styled `<span>` stay as static structure.
+ *
  * Excludes: leaves (no children — handled by isEditableLeaf), block-level
- * children, anchors/images/buttons, and elements with more than one direct text
- * run (can't be expressed as a single field without dropping structure).
+ * children, and anchors/images/buttons (those carry their own editable data).
  */
 export function isInlineTextContainer($: cheerio.CheerioAPI, $el: cheerio.Cheerio<any>): boolean {
-    const el: any = $el[0];
-    if (!el || !Array.isArray(el.children)) return false;
-
     const childElements = $el.children().toArray();
     if (childElements.length === 0) return false;
 
@@ -251,10 +251,16 @@ export function isInlineTextContainer($: cheerio.CheerioAPI, $el: cheerio.Cheeri
         }
     }
 
-    const directTextRuns = el.children.filter(
+    return directTextRunCount($el) >= 1;
+}
+
+/** Count of non-empty direct text nodes (text runs) of an element. */
+export function directTextRunCount($el: cheerio.Cheerio<any>): number {
+    const el: any = $el[0];
+    if (!el || !Array.isArray(el.children)) return 0;
+    return el.children.filter(
         (n: any) => n.type === 'text' && typeof n.data === 'string' && n.data.trim().length > 0
-    );
-    return directTextRuns.length === 1;
+    ).length;
 }
 
 // Global index counter for truly unique field names
@@ -894,18 +900,24 @@ export function detectEditableFields(
             // Must have ZERO child elements and actual text content
             if (!isEditableLeaf($el)) {
                 // …unless it mixes its own text with inline children
-                // (e.g. <h2>Our <span class="text-red">…</span></h2>): capture the
-                // element's OWN text as a plain field. The inline children are
-                // detected on their own iterations, so their markup is preserved.
+                // (e.g. <h2>Our <span class="text-red">…</span></h2> or a heading
+                // split by <br>): capture each of the element's OWN text runs as a
+                // separate plain field (addressed by textNodeIndex). The inline
+                // children are detected on their own iterations, so their markup
+                // is preserved as static structure.
                 if (isInlineTextContainer($, $el)) {
-                    const fieldName = generateFieldName($, $el, tagName, textIndex++);
                     const selector = buildUniqueSelector($, $el);
-                    detectedFields[getUniqueFieldName(fieldName)] = {
-                        selector,
-                        type: 'plain',
-                        editable: true,
-                        source: 'auto',
-                    };
+                    const runs = directTextRunCount($el);
+                    for (let i = 0; i < runs; i++) {
+                        const fieldName = generateFieldName($, $el, tagName, textIndex++);
+                        detectedFields[getUniqueFieldName(fieldName)] = {
+                            selector,
+                            type: 'plain',
+                            editable: true,
+                            source: 'auto',
+                            textNodeIndex: i,
+                        };
+                    }
                     processedElements.add(el);
                 }
                 return;
