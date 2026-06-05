@@ -21,6 +21,39 @@ function isSafeToEmpty($el: cheerio.Cheerio<any>): boolean {
 }
 
 /**
+ * Bind a plain-text field.
+ *
+ * Leaf element  → empty it and drop in `{{ expr }}` (original behaviour).
+ * Element with child elements → replace ONLY its own direct text node with the
+ * binding, leaving the children (which carry their own fields) intact. This is
+ * what lets `<h2>Our <span class="text-red">Core Values</span></h2>` become two
+ * plain fields without destroying the styled span. No-op if there is no direct
+ * text node to replace, so it's safe for any plain field.
+ */
+function bindPlainText($el: cheerio.Cheerio<any>, expr: string): void {
+  if (isSafeToEmpty($el)) {
+    $el.empty();
+    $el.text(expr);
+    return;
+  }
+  replaceDirectTextNode($el, expr);
+}
+
+/** Replace the element's first non-empty direct text node, preserving the
+ *  surrounding whitespace (so the separator before/after a sibling survives). */
+function replaceDirectTextNode($el: cheerio.Cheerio<any>, expr: string): void {
+  const el: any = $el[0];
+  if (!el || !Array.isArray(el.children)) return;
+  for (const node of el.children) {
+    if (node.type === "text" && typeof node.data === "string" && node.data.trim()) {
+      const m = node.data.match(/^(\s*)[\s\S]*?(\s*)$/);
+      node.data = `${m ? m[1] : ""}${expr}${m ? m[2] : ""}`;
+      return;
+    }
+  }
+}
+
+/**
  * Replace element content with Vue template binding
  */
 function replaceWithBinding(
@@ -68,13 +101,10 @@ function replaceWithBinding(
     $el.attr("v-html", `content.${fieldName}`);
     $el.empty(); // Remove static content
   } else {
-    // SAFETY CHECK: Don't empty elements with children (would destroy structure)
-    if (!isSafeToEmpty($el)) {
-      return;
-    }
-    // For plain text, use {{ }}
-    $el.empty();
-    $el.text(`{{ content.${fieldName} }}`);
+    // Plain text. For a leaf this empties + sets {{ }}; for an element that also
+    // has child elements (e.g. a heading with a styled <span>) it replaces only
+    // the element's own text node, leaving the children and their fields intact.
+    bindPlainText($el, `{{ content.${fieldName} }}`);
   }
 }
 
@@ -125,8 +155,7 @@ function applyFieldBinding(
     $fieldEl.attr("v-html", `${prefix}.${fieldName}`);
     $fieldEl.empty();
   } else {
-    $fieldEl.empty();
-    $fieldEl.text(`{{ ${prefix}.${fieldName} }}`);
+    bindPlainText($fieldEl, `{{ ${prefix}.${fieldName} }}`);
   }
 }
 

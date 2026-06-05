@@ -212,6 +212,51 @@ export function isEditableLeaf($el: cheerio.Cheerio<any>): boolean {
     return true;
 }
 
+/**
+ * Inline/formatting tags that live *inside* a text field rather than being
+ * fields of their own (a coloured word, bold, a line break…). Anchors and
+ * images are intentionally absent — they carry their own editable data and are
+ * handled by link/image detection.
+ */
+const INLINE_TEXT_TAGS = new Set([
+    'span', 'strong', 'em', 'b', 'i', 'u', 's', 'strike', 'small',
+    'sup', 'sub', 'mark', 'code', 'abbr', 'time', 'font', 'br', 'wbr',
+]);
+
+/**
+ * A "mixed text" element: it has exactly one run of its OWN direct text plus
+ * inline formatting children — e.g. `<h2>Our <span class="text-red">Core Values</span></h2>`.
+ *
+ * Such an element should contribute a PLAIN field for its own text ("Our"),
+ * while its inline children stay their own fields ("Core Values"), so the
+ * styling that the <span> exists for is preserved as static structure. Without
+ * this the parent's text is orphaned as uneditable static DOM.
+ *
+ * Excludes: leaves (no children — handled by isEditableLeaf), block-level
+ * children, anchors/images/buttons, and elements with more than one direct text
+ * run (can't be expressed as a single field without dropping structure).
+ */
+export function isInlineTextContainer($: cheerio.CheerioAPI, $el: cheerio.Cheerio<any>): boolean {
+    const el: any = $el[0];
+    if (!el || !Array.isArray(el.children)) return false;
+
+    const childElements = $el.children().toArray();
+    if (childElements.length === 0) return false;
+
+    for (const child of childElements) {
+        const tag = (child.tagName || '').toLowerCase();
+        if (!INLINE_TEXT_TAGS.has(tag)) return false;
+        if ($(child).find('div, p, section, ul, ol, li, img, a, button, h1, h2, h3, h4, h5, h6').length > 0) {
+            return false;
+        }
+    }
+
+    const directTextRuns = el.children.filter(
+        (n: any) => n.type === 'text' && typeof n.data === 'string' && n.data.trim().length > 0
+    );
+    return directTextRuns.length === 1;
+}
+
 // Global index counter for truly unique field names
 let globalFieldIndex = 0;
 
@@ -847,7 +892,24 @@ export function detectEditableFields(
 
             // CRITICAL: Only detect LEAF elements
             // Must have ZERO child elements and actual text content
-            if (!isEditableLeaf($el)) return;
+            if (!isEditableLeaf($el)) {
+                // …unless it mixes its own text with inline children
+                // (e.g. <h2>Our <span class="text-red">…</span></h2>): capture the
+                // element's OWN text as a plain field. The inline children are
+                // detected on their own iterations, so their markup is preserved.
+                if (isInlineTextContainer($, $el)) {
+                    const fieldName = generateFieldName($, $el, tagName, textIndex++);
+                    const selector = buildUniqueSelector($, $el);
+                    detectedFields[getUniqueFieldName(fieldName)] = {
+                        selector,
+                        type: 'plain',
+                        editable: true,
+                        source: 'auto',
+                    };
+                    processedElements.add(el);
+                }
+                return;
+            }
 
             const fieldName = generateFieldName($, $el, tagName, textIndex++);
             const fieldType = determineFieldType($el, tagName);
