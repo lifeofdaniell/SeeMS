@@ -13,6 +13,8 @@ export interface ParsedPage {
   htmlContent: string;
   cssFiles: string[];
   embeddedStyles: string;
+  /** Per-page <style> blocks from <head> — scoped to this page, not global. */
+  headStyles: string;
   images: string[];
   links: string[];
   wfPage?: string;
@@ -165,11 +167,12 @@ export function parseHTML(html: string, fileName: string): ParsedPage {
     embeddedStyles += $(el).html() + "\n";
   });
 
-  // Get custom embedded <style> tags in <head> (Webflow custom code embeds).
-  // Linked stylesheets use <link>, so a bare <style> here is author CSS that
-  // would otherwise be dropped entirely.
+  // Custom embedded <style> tags in <head> (Webflow per-page custom code).
+  // These are page-specific, so keep them separate from the global embedded
+  // styles — they get scoped to this page's .astro instead of main.css.
+  let headStyles = "";
   $("head > style").each((_, el) => {
-    embeddedStyles += $(el).html() + "\n";
+    headStyles += $(el).html() + "\n";
   });
 
   // Remove the global-embed elements and body/head style tags from DOM
@@ -208,6 +211,7 @@ export function parseHTML(html: string, fileName: string): ParsedPage {
     htmlContent,
     cssFiles,
     embeddedStyles,
+    headStyles,
     images,
     links,
     wfPage,

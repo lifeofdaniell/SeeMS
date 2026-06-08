@@ -130,7 +130,10 @@ function applyFieldBinding(
   fieldType: string | undefined,
   prefix: string
 ): void {
-  const $fieldEl = $context.find(selector);
+  // Look in descendants first; if not found, the context element itself may be
+  // the field (e.g. a tag chip <a class="...tag"> where the child IS the link).
+  let $fieldEl = $context.find(selector);
+  if (!$fieldEl.length && $context.is(selector)) $fieldEl = $context;
   if (!$fieldEl.length) return;
 
   const isImage = fieldType === "image" || fieldName === "image" || fieldName.includes("image");
@@ -254,12 +257,16 @@ export async function transformVueToReactive(
   if (!templateMatch) return;
 
   // Only import components that are top-level on this page (not nested inside
-  // another component). topLevelPages is set by the extract commands. When
-  // absent (e.g. older manifest or convert path), fall back to component.pages.
+  // another component). topLevelPages applies to shared-section components only
+  // (e.g. AnnouncementBar nested in Sitenav). collection-item components are
+  // rendered via v-for and must always be imported on their pages, so they use
+  // `pages` directly. Fall back to `pages` when topLevelPages is absent.
   const componentNames = Object.entries(manifest.global?.components || {})
     .filter(([, c]) => {
-      const topLevel = (c as any).topLevelPages as string[] | undefined;
-      const pageList = topLevel ?? (c as any).pages ?? [];
+      const comp = c as any;
+      const pageList = comp.role === 'collection-item'
+        ? (comp.pages ?? [])
+        : (comp.topLevelPages ?? comp.pages ?? []);
       return pageList.includes(pageName);
     })
     .map(([name]) => name);

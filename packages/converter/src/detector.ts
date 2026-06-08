@@ -152,6 +152,20 @@ function isInsideButton($: cheerio.CheerioAPI, el: any): boolean {
 }
 
 /**
+ * A "simple text link" is an <a> whose content is just its own text or inline
+ * formatting — a tag chip `<a>Featured</a>` or a text button `<a><span>Buy</span></a>`.
+ * The link IS the field, so its inner text must not be captured separately.
+ *
+ * A "wrapper link" instead contains structured block children (divs/headings
+ * with their own classes) — navigational chrome around real content, e.g. a
+ * card whose image or text block is wrapped in <a> for click-through. Its inner
+ * fields SHOULD still be captured.
+ */
+function isSimpleTextLink($: cheerio.CheerioAPI, $a: cheerio.Cheerio<any>): boolean {
+    return isEditableLeaf($a) || isInlineTextContainer($, $a);
+}
+
+/**
  * Check if element should be ignored based on patterns
  */
 function shouldIgnoreElement(
@@ -595,6 +609,21 @@ function detectChildFields(
 ): Record<string, CollectionFieldMapping> {
     const fields: Record<string, CollectionFieldMapping> = {};
 
+    // The child element may itself be the content rather than a wrapper — e.g. a
+    // tag chip <a class="...tag">Featured</a>. find() below only sees
+    // descendants, so capture the child's own value. An <a> stays a link.
+    if (isEditableLeaf($el) || isInlineTextContainer(_$, $el)) {
+        const selfClass = getPrimaryClass($el.attr('class'));
+        const fieldName = selfClass ? selfClass.fieldName : 'label';
+        const selector = selfClass
+            ? `.${selfClass.selector}`
+            : (($el.prop('tagName') || 'div') as string).toLowerCase();
+        fields[fieldName] = $el.is('a, NuxtLink, nuxt-link')
+            ? { selector, type: 'link', attribute: 'href' }
+            : { selector, type: isInlineTextContainer(_$, $el) ? 'rich' : 'plain' };
+        return fields;
+    }
+
     // Image
     const $img = $el.find('img').first();
     if ($img.length) {
@@ -786,10 +815,31 @@ export function detectEditableFields(
             const collectionClassInfo = getPrimaryClass($(elements[0]).attr('class'));
             const collectionSelector = collectionClassInfo ? `.${collectionClassInfo.selector}` : `.${className}`;
 
+            // The collection item element may itself be the content rather than a
+            // wrapper — e.g. a tag chip <a class="...tag">Featured</a> or a plain
+            // text item. find() below only sees descendants, so capture the item
+            // element's own value here (content-extractor matches it via .is()).
+            // An <a> stays a link (it carries an href, e.g. for tag filtering);
+            // a plain leaf is text (rich when it has <br>/inline formatting).
+            if (isEditableLeaf($first) || isInlineTextContainer($, $first)) {
+                const selfClass = getPrimaryClass($first.attr('class'));
+                const selfField = selfClass ? selfClass.fieldName : 'label';
+                const selfSelector = selfClass ? `.${selfClass.selector}` : collectionSelector;
+                if (!collectionFields[selfField]) {
+                    collectionFields[selfField] = $first.is('a, NuxtLink, nuxt-link')
+                        ? { selector: selfSelector, type: 'link', attribute: 'href' }
+                        : { selector: selfSelector, type: isInlineTextContainer($, $first) ? 'rich' : 'plain' };
+                }
+            }
+
             // Detect fields within collection - Images
             $first.find('img').each((_, img) => {
-                if (isInsideButton($, img)) return;
                 const $img = $(img);
+                // Skip real buttons and simple text links, but allow images
+                // wrapped in a navigational link (e.g. a clickable card image).
+                if ($img.closest('button, .c_button, .c_icon_button').length > 0) return;
+                const $imgLink = $img.closest('a, NuxtLink, nuxt-link');
+                if ($imgLink.length > 0 && isSimpleTextLink($, $imgLink)) return;
                 const $parent = $img.parent();
                 const parentClassInfo = getPrimaryClass($parent.attr('class'));
 
@@ -810,9 +860,13 @@ export function detectEditableFields(
             const seenTextSelectors = new Set<string>();
             $first.find('div, span, h1, h2, h3, h4, h5, h6, p, li').each((_, el) => {
                 const $el = $(el);
-                // Links are captured separately below; skip their inner text.
-                if (isInsideButton($, el)) return;
-                if ($el.closest('a, NuxtLink, nuxt-link').length > 0) return;
+                // Skip real buttons. For links: skip text inside a *simple text
+                // link* (a tag chip / text button — the link itself is the
+                // field), but DO capture content inside a *wrapper link* (a card
+                // whose title/sub are wrapped in <a> for click-through).
+                if ($el.closest('button, .c_button, .c_icon_button').length > 0) return;
+                const $linkAncestor = $el.closest('a, NuxtLink, nuxt-link');
+                if ($linkAncestor.length > 0 && isSimpleTextLink($, $linkAncestor)) return;
 
                 // Accept true leaves (no child elements) AND inline-text
                 // containers — e.g. a <p> split by <br><br> (a multi-paragraph
@@ -824,20 +878,46 @@ export function detectEditableFields(
 
                 const tag = ((el as any).tagName || 'div').toLowerCase();
                 const classInfo = getPrimaryClass($el.attr('class'));
-                const selector = classInfo ? `.${classInfo.selector}` : tag;
+
+                let selector: string;
+                let fieldName: string;
+                let fieldType: 'plain' | 'rich' = isInline ? 'rich' : 'plain';
+
+                if (classInfo) {
+                    // The text element has its own semantic class — use it.
+                    selector = `.${classInfo.selector}`;
+                    fieldName = classInfo.fieldName;
+                } else {
+                    // No class on the text element. Common Webflow pattern is a
+                    // classed wrapper around a plain text <div>
+                    // (e.g. <div class="gallery-item_body"><div>Text</div></div>).
+                    // Climb to the nearest classed ancestor within the card and
+                    // bind to it as 'rich' so the nested text is captured.
+                    const cardEl = $first[0];
+                    let $cursor = $el.parent();
+                    let wrapperInfo: ReturnType<typeof getPrimaryClass> = null;
+                    while ($cursor.length && $cursor[0] !== cardEl) {
+                        const ci = getPrimaryClass($cursor.attr('class'));
+                        if (ci) { wrapperInfo = ci; break; }
+                        $cursor = $cursor.parent();
+                    }
+                    if (wrapperInfo) {
+                        selector = `.${wrapperInfo.selector}`;
+                        fieldName = wrapperInfo.fieldName;
+                        fieldType = 'rich';
+                    } else {
+                        selector = tag;
+                        fieldName = /^h[1-6]$/.test(tag) ? 'title'
+                            : tag === 'p' ? 'description'
+                            : `text_${seenTextSelectors.size + 1}`;
+                    }
+                }
+
                 if (seenTextSelectors.has(selector)) return;
                 seenTextSelectors.add(selector);
 
-                let fieldName: string;
-                if (classInfo) fieldName = classInfo.fieldName;
-                else if (/^h[1-6]$/.test(tag)) fieldName = 'title';
-                else if (tag === 'p') fieldName = 'description';
-                else fieldName = `text_${seenTextSelectors.size}`;
-
                 if (!collectionFields[fieldName]) {
-                    // Inline containers (with <br>/inline formatting) → 'rich' so
-                    // the extractor captures the full text across the children.
-                    collectionFields[fieldName] = { selector, type: isInline ? 'rich' : 'plain' };
+                    collectionFields[fieldName] = { selector, type: fieldType };
                 }
             });
 

@@ -426,6 +426,7 @@ export async function writeAstroVuePage(
     bodyClass?: string;
     uniqueBodyInlineScripts?: string[];
     uniqueBodyCdnScripts?: ScriptTag[];
+    headStyles?: string;
   } = {},
   editorEnabled = false,
   collectionNames: string[] = [],
@@ -442,11 +443,17 @@ export async function writeAstroVuePage(
   const relativeLayoutImport = ensureRelativeImport(path.relative(path.dirname(astroPath), layoutPath));
   const relativeVueImport = ensureRelativeImport(path.relative(path.dirname(astroPath), vuePath));
 
-  const { title = '', wfPage = '', wfSite = '', bodyClass = '', uniqueBodyInlineScripts = [], uniqueBodyCdnScripts = [] } = pageOptions;
+  const { title = '', wfPage = '', wfSite = '', bodyClass = '', uniqueBodyInlineScripts = [], uniqueBodyCdnScripts = [], headStyles = '' } = pageOptions;
   const safeTitle = title.replace(/"/g, '&quot;');
   const safeWfPage = wfPage.replace(/"/g, '&quot;');
   const safeWfSite = wfSite.replace(/"/g, '&quot;');
   const safeBodyClass = bodyClass.replace(/"/g, '&quot;');
+
+  // Page-specific <head> CSS — scoped to this page only. `is:global` keeps the
+  // raw selectors (Astro scopes <style> by default, which would break them).
+  const headStylesBlock = headStyles.trim()
+    ? `\n<style is:global>\n${headStyles.trim()}\n</style>`
+    : '';
 
   const pageCdnScriptsSlot = uniqueBodyCdnScripts.length > 0
     ? `\n  <Fragment slot="page-cdn-scripts">\n${uniqueBodyCdnScripts.map(s => {
@@ -540,7 +547,7 @@ content = resolveStrapiMedia(content);
 ---
 <BaseLayout title="${safeTitle}" wfPage="${safeWfPage}" wfSite="${safeWfSite}" bodyClass="${safeBodyClass}">
   <Page content={content} globals={globals} />${pageCdnScriptsSlot}${pageScriptsSlot}
-</BaseLayout>${editorScript}
+</BaseLayout>${headStylesBlock}${editorScript}
 `, 'utf-8');
 }
 

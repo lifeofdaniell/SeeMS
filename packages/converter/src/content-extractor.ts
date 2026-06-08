@@ -52,6 +52,45 @@ function extractLinkValue($element: cheerio.Cheerio<any>): LinkFieldValue {
 }
 
 /**
+ * Extract every field of a collection item (or nested child item) into `out`.
+ * Looks in descendants first, then falls back to the element itself — a tag
+ * chip like `<a class="...tag">Featured</a>` IS the field, which find() can't
+ * match. Shared by the flat-field and nested-children extraction paths.
+ */
+function extractItemFields(
+    $: cheerio.CheerioAPI,
+    $elem: cheerio.Cheerio<any>,
+    fields: Record<string, any>,
+    out: CollectionItem
+): void {
+    for (const [fieldName, fieldConfig] of Object.entries(fields)) {
+        const fieldSelector = typeof fieldConfig === 'string'
+            ? fieldConfig
+            : (fieldConfig as any).selector || fieldConfig;
+        const fieldType = typeof fieldConfig === 'object' ? (fieldConfig as any).type : undefined;
+
+        let fieldElement = $elem.find(fieldSelector as string).first();
+        if (fieldElement.length === 0 && $elem.is(fieldSelector as string)) {
+            fieldElement = $elem;
+        }
+        if (fieldElement.length === 0) continue;
+
+        if (fieldType === 'image' || fieldName === 'image' || fieldName.includes('image')) {
+            out[fieldName] = fieldElement.attr('src') || fieldElement.find('img').attr('src') || '';
+        } else if (fieldType === 'link' || fieldName === 'link' || fieldName === 'url') {
+            const linkElement = fieldElement.is('a') || fieldElement.is('NuxtLink') || fieldElement.is('nuxt-link')
+                ? fieldElement
+                : fieldElement.find('a, NuxtLink, nuxt-link').first();
+            if (linkElement.length > 0) {
+                out[fieldName] = extractLinkValue(linkElement);
+            }
+        } else {
+            out[fieldName] = extractFieldText(fieldElement, fieldType);
+        }
+    }
+}
+
+/**
  * Extract the text value for a non-media / non-link field.
  *
  * `rich` fields keep their full inner text (formatting children are part of the
@@ -137,33 +176,22 @@ export function extractContentFromHTML(
                 const item: CollectionItem = {};
                 const $elem = $(elem);
 
-                // Extract each field within the collection item
-                for (const [fieldName, fieldConfig] of Object.entries(collection.fields)) {
-                    // Get selector from field config
-                    const fieldSelector = typeof fieldConfig === 'string'
-                        ? fieldConfig
-                        : (fieldConfig as any).selector || fieldConfig;
-                    const fieldType = typeof fieldConfig === 'object' ? (fieldConfig as any).type : undefined;
+                // Extract each flat field within the collection item
+                extractItemFields($, $elem, collection.fields, item);
 
-                    const fieldElement = $elem.find(fieldSelector as string).first();
-
-                    if (fieldElement.length > 0) {
-                        // Check field type or infer from name
-                        if (fieldType === 'image' || fieldName === 'image' || fieldName.includes('image')) {
-                            const src = fieldElement.attr('src') || fieldElement.find('img').attr('src') || '';
-                            item[fieldName] = src;
-                        } else if (fieldType === 'link' || fieldName === 'link' || fieldName === 'url') {
-                            // Extract link as composite object
-                            const linkElement = fieldElement.is('a') || fieldElement.is('NuxtLink') || fieldElement.is('nuxt-link')
-                                ? fieldElement
-                                : fieldElement.find('a, NuxtLink, nuxt-link').first();
-                            if (linkElement.length > 0) {
-                                item[fieldName] = extractLinkValue(linkElement);
-                            }
-                        } else {
-                            // Extract text (direct text only for plain fields)
-                            item[fieldName] = extractFieldText(fieldElement, fieldType);
-                        }
+                // Nested children → an array of child items (Strapi repeatable
+                // component). e.g. a news card with repeating tag chips.
+                if (collection.children) {
+                    for (const [childFieldName, childDef] of Object.entries(collection.children)) {
+                        const childSelector = (childDef as any).selector;
+                        const childFields = (childDef as any).fields;
+                        const childItems: CollectionItem[] = [];
+                        $elem.find(childSelector).each((_ci, childEl) => {
+                            const childItem: CollectionItem = {};
+                            extractItemFields($, $(childEl), childFields, childItem);
+                            if (Object.keys(childItem).length > 0) childItems.push(childItem);
+                        });
+                        if (childItems.length > 0) (item as any)[childFieldName] = childItems;
                     }
                 }
 

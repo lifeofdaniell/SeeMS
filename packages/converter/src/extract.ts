@@ -241,6 +241,7 @@ async function regeneratePageFiles(
         bodyClass: parsed.bodyClass,
         uniqueBodyInlineScripts: uniqueScripts,
         uniqueBodyCdnScripts: uniqueCdnScripts,
+        headStyles: parsed.headStyles,
       }, editorEnabled, pageCollections, allSharedOnPage);
     }
   } else {
@@ -626,12 +627,21 @@ export async function runExtractComponent(
   await fs.writeFile(componentFilePath, componentFileContent, 'utf-8');
   console.log(pc.green(`  ✓ Created components/${componentName}.vue${childNames.length ? ` (imports: ${childNames.join(', ')})` : ''}`));
 
-  // Apply the new component's marker to pages
-  for (const pageName of pagesWithComponent) {
-    const html = htmlContentMap.get(pageName)!;
-    const $ = cheerio.load(html);
-    replaceWithComponent($, selector, componentName);
-    htmlContentMap.set(pageName, $.html());
+  // Apply the new component's marker to pages.
+  // Shared-section: replace every matching element with a static component tag.
+  // Collection-item: do NOT replace — leave the repeating elements in place so
+  // the collection transform (transformCollection, driven by the manifest's
+  // page collection + componentName) can collapse them into a single
+  // `<Component v-for="item in content.<collection>" :item="item">`. Replacing
+  // here would turn each row into a static shared-section tag bound to
+  // :content/globals instead of :item, leaving the rendered items empty.
+  if (role !== 'collection-item') {
+    for (const pageName of pagesWithComponent) {
+      const html = htmlContentMap.get(pageName)!;
+      const $ = cheerio.load(html);
+      replaceWithComponent($, selector, componentName);
+      htmlContentMap.set(pageName, $.html());
+    }
   }
 
   // Build pageComponentMap from what is actually present in the final page HTML,

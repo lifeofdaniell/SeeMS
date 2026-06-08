@@ -319,6 +319,7 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
                     bodyClass: parsed.bodyClass,
                     uniqueBodyInlineScripts: uniqueScripts,
                     uniqueBodyCdnScripts: uniqueCdnScripts,
+                    headStyles: parsed.headStyles,
                 }, editorEnabled, [], pageComponentMap.get(pageName) || []);
                 console.log(pc.green(`  ✓ Created ${htmlFile.replace('.html', '.astro')}`));
             }
@@ -375,6 +376,7 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
                     bodyClass: parsed.bodyClass,
                     uniqueBodyInlineScripts: uniqueScripts,
                     uniqueBodyCdnScripts: uniqueCdnScripts,
+                    headStyles: parsed.headStyles,
                 }, editorEnabled, pageCollections, pageComponentMap.get(pageName) || []);
             }
         }
