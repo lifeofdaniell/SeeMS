@@ -7,6 +7,7 @@ import type { CMSManifest, PageManifest, LinkFieldValue } from '@see-ms/types';
 import * as cheerio from 'cheerio';
 import { isLikelyImagePath, normalizeImageSeedPath } from './assets';
 import { sharedComponentTypeName } from './transformer';
+import { normalizeRoute } from './parser';
 
 export interface ExtractedContent {
     pages: Record<string, PageContent>;
@@ -38,8 +39,13 @@ function extractLinkValue($element: cheerio.Cheerio<any>): LinkFieldValue {
     const target = $element.attr('target');
     const newTab = target === '_blank';
 
+    // Normalise internal URLs so relative page refs like "contact.html" become
+    // "/contact". External links, mailto:, tel:, and anchors are left as-is.
+    const isExternal = /^(https?:|mailto:|tel:|#|\/\/)/.test(href);
+    const url = (!isExternal && href) ? normalizeRoute(href) : href;
+
     return {
-        url: href,
+        url,
         text: text,
         newTab: newTab || undefined,
     };

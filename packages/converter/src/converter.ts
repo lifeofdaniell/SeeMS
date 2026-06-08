@@ -12,6 +12,7 @@ import {
     formatVueFiles,
     generateBaseLayout,
     writeAstroVuePage,
+    normalizeLocalScriptSrc,
     sharedComponentsDir,
     sharedComponentsRelDir,
 } from './filesystem';
@@ -225,6 +226,8 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
 
         // For astro-vue: deduplicate scripts, generate BaseLayout, write .astro pages
         let sharedBodyInlineSet = new Set<string>();
+        let sharedBodyCdnSrcs = new Set<string>();
+        const cdnKey = (src: string) => normalizeLocalScriptSrc(src);
         if (target === 'astro-vue') {
             // Count occurrences of each body inline script across all pages
             const inlineScriptCounts = new Map<string, number>();
@@ -244,6 +247,25 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
                     .map(([content]) => content)
             );
 
+            // Same deduplication for body CDN scripts (e.g. Lottie, Swiper).
+            // Shared across 2+ pages → BaseLayout. Page-unique → page-cdn-scripts slot.
+            const cdnScriptCounts = new Map<string, number>();
+            for (const scripts of pageScriptsMap.values()) {
+                const seenInPage = new Set<string>();
+                for (const s of scripts.bodyCdn) {
+                    const key = cdnKey(s.src);
+                    if (!seenInPage.has(key)) {
+                        cdnScriptCounts.set(key, (cdnScriptCounts.get(key) || 0) + 1);
+                        seenInPage.add(key);
+                    }
+                }
+            }
+            sharedBodyCdnSrcs = new Set(
+                Array.from(cdnScriptCounts.entries())
+                    .filter(([, count]) => count > 1)
+                    .map(([key]) => key)
+            );
+
             // Use scripts and CSS order from the first page (identical across all Webflow pages)
             const firstPageName = htmlFiles[0] ? htmlPathToPageId(htmlFiles[0]) : null;
             const firstScripts = firstPageName ? pageScriptsMap.get(firstPageName) : null;
@@ -260,24 +282,43 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
                 return ai - bi;
             });
 
+            // Collect shared CDN scripts from ALL pages, deduplicated by normalised key.
+            const sharedBodyCdn: import('./parser').ScriptTag[] = [];
+            const seenSharedCdnKeys = new Set<string>();
+            for (const scripts of pageScriptsMap.values()) {
+                for (const s of scripts.bodyCdn) {
+                    const key = cdnKey(s.src);
+                    if (sharedBodyCdnSrcs.has(key) && !seenSharedCdnKeys.has(key)) {
+                        sharedBodyCdn.push(s);
+                        seenSharedCdnKeys.add(key);
+                    }
+                }
+            }
+            const hasUniqueCdn = [...pageScriptsMap.values()].some(
+                s => s.bodyCdn.some(c => !sharedBodyCdnSrcs.has(cdnKey(c.src)))
+            );
+
             await generateBaseLayout(outputDir, {
                 cssFiles: cssFilesOrdered,
                 headCdnScripts: firstScripts?.headCdn ?? [],
                 headInlineScripts: firstScripts?.headInline ?? [],
-                bodyCdnScripts: firstScripts?.bodyCdn ?? [],
+                bodyCdnScripts: sharedBodyCdn,
                 sharedBodyInlineScripts: Array.from(sharedBodyInlineSet),
+                uniqueBodyCdnSlot: hasUniqueCdn,
             });
             console.log(pc.green('  ✓ Generated src/layouts/BaseLayout.astro'));
 
             for (const { htmlFile, pageName, parsed } of astroPageDataMap.values()) {
                 const scripts = pageScriptsMap.get(pageName);
                 const uniqueScripts = scripts?.bodyInline.filter(s => !sharedBodyInlineSet.has(s)) ?? [];
+                const uniqueCdnScripts = scripts?.bodyCdn.filter(s => !sharedBodyCdnSrcs.has(cdnKey(s.src))) ?? [];
                 await writeAstroVuePage(outputDir, htmlFile, pageName, {
                     title: parsed.title,
                     wfPage: parsed.wfPage,
                     wfSite: parsed.wfSite,
                     bodyClass: parsed.bodyClass,
                     uniqueBodyInlineScripts: uniqueScripts,
+                    uniqueBodyCdnScripts: uniqueCdnScripts,
                 }, editorEnabled, [], pageComponentMap.get(pageName) || []);
                 console.log(pc.green(`  ✓ Created ${htmlFile.replace('.html', '.astro')}`));
             }
@@ -326,12 +367,14 @@ export async function convertWebflowExport(options: ConversionOptions): Promise<
                 if (pageCollections.length === 0) continue;
                 const scripts = pageScriptsMap.get(pageName);
                 const uniqueScripts = scripts?.bodyInline.filter(s => !sharedBodyInlineSet.has(s)) ?? [];
+                const uniqueCdnScripts = scripts?.bodyCdn.filter(s => !sharedBodyCdnSrcs.has(cdnKey(s.src))) ?? [];
                 await writeAstroVuePage(outputDir, htmlFile, pageName, {
                     title: parsed.title,
                     wfPage: parsed.wfPage,
                     wfSite: parsed.wfSite,
                     bodyClass: parsed.bodyClass,
                     uniqueBodyInlineScripts: uniqueScripts,
+                    uniqueBodyCdnScripts: uniqueCdnScripts,
                 }, editorEnabled, pageCollections, pageComponentMap.get(pageName) || []);
             }
         }

@@ -75,7 +75,7 @@ export function extractPageScripts(html: string): PageScripts {
  * - ../index.html -> /
  * - press-release/article.html -> /press-release/article
  */
-function normalizeRoute(href: string, currentFile?: string): string {
+export function normalizeRoute(href: string, currentFile?: string): string {
   const [pathPart, suffix = ""] = href.split(/(?=[?#])/);
   // Remove .html extension
   let route = pathPart.replace(/\.html$/i, "");
@@ -91,7 +91,14 @@ function normalizeRoute(href: string, currentFile?: string): string {
     return `/${suffix}`;
   }
 
-  if (currentFile && !route.startsWith("/")) {
+  // Only use currentFile context when the href explicitly navigates relative
+  // to the current directory (starts with ./ or ../ or contains a / meaning
+  // it's a subdirectory reference). Bare filenames like "about.html" in
+  // Webflow exports are always peer-level links regardless of where the source
+  // file lives, so resolving them against the current directory would produce
+  // broken routes like "offerings/about" on a nested page.
+  const isExplicitlyRelative = route.startsWith("./") || route.startsWith("../") || route.includes("/");
+  if (currentFile && !route.startsWith("/") && isExplicitlyRelative) {
     route = path.posix.join(path.posix.dirname(currentFile.replace(/\\/g, "/")), route);
   }
 
@@ -158,10 +165,18 @@ export function parseHTML(html: string, fileName: string): ParsedPage {
     embeddedStyles += $(el).html() + "\n";
   });
 
-  // Remove the global-embed elements and body style tags from DOM
+  // Get custom embedded <style> tags in <head> (Webflow custom code embeds).
+  // Linked stylesheets use <link>, so a bare <style> here is author CSS that
+  // would otherwise be dropped entirely.
+  $("head > style").each((_, el) => {
+    embeddedStyles += $(el).html() + "\n";
+  });
+
+  // Remove the global-embed elements and body/head style tags from DOM
   $(".global-embed").remove();
   $("body > style").remove();
   $(".w-embed > style").remove();
+  $("head > style").remove();
 
   // Remove all script tags from body
   $("body script").remove();

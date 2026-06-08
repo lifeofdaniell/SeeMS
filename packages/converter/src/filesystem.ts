@@ -12,6 +12,20 @@ import type { ProjectTarget } from './boilerplate';
 import type { ScriptTag } from './parser';
 import { sharedComponentTypeName } from './transformer';
 
+/**
+ * Normalise a local script src to a canonical /js/<basename> form.
+ * Handles paths from both root pages ("js/webflow.js") and nested pages
+ * ("../js/webflow.js", "../../js/webflow.js").
+ */
+export function normalizeLocalScriptSrc(src: string): string {
+  if (src.startsWith('http') || src.startsWith('//')) return src;
+  const basename = src
+    .replace(/^(\.\.\/)+/, '')
+    .replace(/^\.\//, '')
+    .replace(/^js\//, '');
+  return `/js/${basename}`;
+}
+
 export interface AssetPaths {
   css: string[];       // Goes to assets/css/ (nuxt) or public/css/ (astro-vue)
   images: string[];    // Goes to public/assets/images/
@@ -257,6 +271,8 @@ export interface BaseLayoutOptions {
   headInlineScripts: string[];
   bodyCdnScripts: ScriptTag[];
   sharedBodyInlineScripts: string[];
+  /** Body CDN scripts slot for page-unique scripts (e.g. Lottie, Swiper on one page) */
+  uniqueBodyCdnSlot?: boolean;
 }
 
 /**
@@ -292,8 +308,7 @@ export async function generateBaseLayout(
     .map(s => {
       let src = s.src;
       if (!src.startsWith('http') && !src.startsWith('//')) {
-        const basename = src.replace(/^\.?\//, '').replace(/^js\//, '');
-        src = `/js/${basename}`;
+        src = normalizeLocalScriptSrc(src);
       }
       const integrity = s.integrity ? ` integrity="${s.integrity}"` : '';
       const crossorigin = s.crossorigin ? ` crossorigin="${s.crossorigin}"` : '';
@@ -304,6 +319,10 @@ export async function generateBaseLayout(
   const sharedInlineTags = sharedBodyInlineScripts
     .map(s => `  <script is:inline>${s}</script>`)
     .join('\n');
+
+  const uniqueCdnSlot = options.uniqueBodyCdnSlot
+    ? `  <slot name="page-cdn-scripts" />`
+    : '';
 
   const content = `---
 // see-ms:generated
@@ -330,6 +349,7 @@ ${headInlineTags}
   <slot />
 ${bodyCdnTags}
 ${sharedInlineTags}
+${uniqueCdnSlot}
   <slot name="page-scripts" />
 </body>
 </html>
@@ -405,6 +425,7 @@ export async function writeAstroVuePage(
     wfSite?: string;
     bodyClass?: string;
     uniqueBodyInlineScripts?: string[];
+    uniqueBodyCdnScripts?: ScriptTag[];
   } = {},
   editorEnabled = false,
   collectionNames: string[] = [],
@@ -421,11 +442,23 @@ export async function writeAstroVuePage(
   const relativeLayoutImport = ensureRelativeImport(path.relative(path.dirname(astroPath), layoutPath));
   const relativeVueImport = ensureRelativeImport(path.relative(path.dirname(astroPath), vuePath));
 
-  const { title = '', wfPage = '', wfSite = '', bodyClass = '', uniqueBodyInlineScripts = [] } = pageOptions;
+  const { title = '', wfPage = '', wfSite = '', bodyClass = '', uniqueBodyInlineScripts = [], uniqueBodyCdnScripts = [] } = pageOptions;
   const safeTitle = title.replace(/"/g, '&quot;');
   const safeWfPage = wfPage.replace(/"/g, '&quot;');
   const safeWfSite = wfSite.replace(/"/g, '&quot;');
   const safeBodyClass = bodyClass.replace(/"/g, '&quot;');
+
+  const pageCdnScriptsSlot = uniqueBodyCdnScripts.length > 0
+    ? `\n  <Fragment slot="page-cdn-scripts">\n${uniqueBodyCdnScripts.map(s => {
+        let src = s.src;
+        if (!src.startsWith('http') && !src.startsWith('//')) {
+          src = normalizeLocalScriptSrc(src);
+        }
+        const integrity = s.integrity ? ` integrity="${s.integrity}"` : '';
+        const crossorigin = s.crossorigin ? ` crossorigin="${s.crossorigin}"` : '';
+        return `    <script src="${src}"${integrity}${crossorigin} is:inline></script>`;
+      }).join('\n')}\n  </Fragment>`
+    : '';
 
   const pageScriptsSlot = uniqueBodyInlineScripts.length > 0
     ? `\n  <Fragment slot="page-scripts">\n${uniqueBodyInlineScripts.map(s => `    <script is:inline>${s}</script>`).join('\n')}\n  </Fragment>`
@@ -506,7 +539,7 @@ try {
 content = resolveStrapiMedia(content);
 ---
 <BaseLayout title="${safeTitle}" wfPage="${safeWfPage}" wfSite="${safeWfSite}" bodyClass="${safeBodyClass}">
-  <Page content={content} globals={globals} />${pageScriptsSlot}
+  <Page content={content} globals={globals} />${pageCdnScriptsSlot}${pageScriptsSlot}
 </BaseLayout>${editorScript}
 `, 'utf-8');
 }

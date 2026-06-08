@@ -124,6 +124,12 @@ export interface SharedComponent {
   selector: string;
   /** Pages where this component appears */
   pages: string[];
+  /**
+   * Pages where this component is a TOP-LEVEL import (not nested inside
+   * another extracted component). Only set when nesting is detected.
+   * When absent, falls back to `pages`.
+   */
+  topLevelPages?: string[];
   /** Editable fields within the component */
   fields?: Record<string, FieldMapping>;
   /** How this component participates in generated pages */

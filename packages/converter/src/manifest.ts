@@ -146,8 +146,13 @@ function buildPages(
       for (const [collectionKey, collection] of Object.entries(detection.collections)) {
         let newName = collectionKey;
         for (const [className, displayName] of Object.entries(options.collectionNames)) {
-          const normalizedClassName = className.replace(/-/g, '_');
-          if (collectionKey === normalizedClassName) {
+          // Match the detector's collection key. The class-based detector keys by
+          // the normalized class name pluralized (trailing 's' added), while the
+          // data-cms-collection path keys without pluralizing — so accept both
+          // forms or the user-provided name gets silently dropped.
+          const base = className.replace(/-/g, '_');
+          const pluralized = base.endsWith('s') ? base : `${base}s`;
+          if (collectionKey === base || collectionKey === pluralized) {
             newName = displayName;
             break;
           }

@@ -802,26 +802,43 @@ export function detectEditableFields(
                 }
             });
 
-            // Tags/categories
-            $first.find('[class*="tag"]').not('[class*="container"]').first().each((_, el) => {
-                const classInfo = getPrimaryClass($(el).attr('class'));
-                if (classInfo) {
-                    collectionFields.tag = { selector: `.${classInfo.selector}`, type: 'plain' };
+            // Text fields: every leaf text element in the card (div, span,
+            // heading, p, li). Webflow uses <div> for most text, so scanning
+            // only headings/paragraphs misses titles/names. Each leaf becomes a
+            // field named after its semantic class (falling back to a tag-based
+            // name when there's no usable class).
+            const seenTextSelectors = new Set<string>();
+            $first.find('div, span, h1, h2, h3, h4, h5, h6, p, li').each((_, el) => {
+                const $el = $(el);
+                // Links are captured separately below; skip their inner text.
+                if (isInsideButton($, el)) return;
+                if ($el.closest('a, NuxtLink, nuxt-link').length > 0) return;
+
+                // Accept true leaves (no child elements) AND inline-text
+                // containers — e.g. a <p> split by <br><br> (a multi-paragraph
+                // bio) or text mixed with inline <span> formatting. Without the
+                // latter, such fields are silently skipped.
+                const isLeaf = isEditableLeaf($el);
+                const isInline = !isLeaf && isInlineTextContainer($, $el);
+                if (!isLeaf && !isInline) return;
+
+                const tag = ((el as any).tagName || 'div').toLowerCase();
+                const classInfo = getPrimaryClass($el.attr('class'));
+                const selector = classInfo ? `.${classInfo.selector}` : tag;
+                if (seenTextSelectors.has(selector)) return;
+                seenTextSelectors.add(selector);
+
+                let fieldName: string;
+                if (classInfo) fieldName = classInfo.fieldName;
+                else if (/^h[1-6]$/.test(tag)) fieldName = 'title';
+                else if (tag === 'p') fieldName = 'description';
+                else fieldName = `text_${seenTextSelectors.size}`;
+
+                if (!collectionFields[fieldName]) {
+                    // Inline containers (with <br>/inline formatting) → 'rich' so
+                    // the extractor captures the full text across the children.
+                    collectionFields[fieldName] = { selector, type: isInline ? 'rich' : 'plain' };
                 }
-            });
-
-            // Headings (title)
-            $first.find('h1, h2, h3, h4, h5, h6').first().each((_, el) => {
-                const classInfo = getPrimaryClass($(el).attr('class'));
-                const selector = classInfo ? `.${classInfo.selector}` : (el as any).tagName?.toLowerCase() || 'h2';
-                collectionFields.title = { selector, type: 'plain' };
-            });
-
-            // Descriptions (paragraphs)
-            $first.find('p').first().each((_, el) => {
-                const classInfo = getPrimaryClass($(el).attr('class'));
-                const selector = classInfo ? `.${classInfo.selector}` : 'p';
-                collectionFields.description = { selector, type: 'plain' };
             });
 
             // Links

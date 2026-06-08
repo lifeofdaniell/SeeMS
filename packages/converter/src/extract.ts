@@ -27,7 +27,7 @@ import { writeSeedData, createSeedReadme } from './seed-writer';
 import {
   scanAssets, findHTMLFiles, readHTMLFile,
   writeVueComponent, formatVueFiles,
-  generateBaseLayout, writeAstroVuePage, sharedComponentsDir,
+  generateBaseLayout, writeAstroVuePage, sharedComponentsDir, normalizeLocalScriptSrc,
 } from './filesystem';
 import { getPageRouteInfo, htmlPathToPageId } from './routes';
 import { loadSeeMSConfig, writeSeeMSConfig, normalizeConfig, mergeConfig, minimalConfig } from './config';
@@ -39,7 +39,8 @@ import {
   setupEditorOverlay,
 } from './editor-integration';
 import { replaceWithComponent } from './component-extractor';
-import { parseHTML, transformForNuxt, htmlToVueComponent, extractPageScripts } from './parser';
+import { normalizePublicAssetPath } from './assets';
+import { parseHTML, transformForNuxt, htmlToVueComponent, extractPageScripts, normalizeRoute } from './parser';
 import type { ParsedPage } from './parser';
 import { transformAllVuePages, transformSharedComponentsToReactive } from './vue-transformer';
 import type { SeeMSConfig, SharedComponent, CMSManifest } from '@see-ms/types';
@@ -141,7 +142,29 @@ async function regeneratePageFiles(
         .map(([content]) => content)
     );
 
-    // Regenerate BaseLayout (CSS order + CDN scripts come from the first page)
+    // Find body CDN scripts shared across 2+ pages → go in BaseLayout.
+    // Page-unique CDN scripts (e.g. Lottie/Swiper on one page) go in the
+    // page-cdn-scripts slot so they're not silently dropped.
+    // Dedup keyed on normalised src so "js/webflow.js" (root pages) and
+    // "../js/webflow.js" (nested pages) are treated as the same file.
+    const cdnKey = (src: string) => normalizeLocalScriptSrc(src);
+    const cdnScriptCounts = new Map<string, number>();
+    for (const scripts of pageScriptsMap.values()) {
+      const seenInPage = new Set<string>();
+      for (const s of scripts.bodyCdn) {
+        const key = cdnKey(s.src);
+        if (!seenInPage.has(key)) {
+          cdnScriptCounts.set(key, (cdnScriptCounts.get(key) ?? 0) + 1);
+          seenInPage.add(key);
+        }
+      }
+    }
+    const sharedBodyCdnSrcs = new Set(
+      [...cdnScriptCounts.entries()]
+        .filter(([, count]) => count > 1)
+        .map(([key]) => key)
+    );
+
     const firstPageName = htmlFiles[0] ? htmlPathToPageId(htmlFiles[0]) : null;
     const firstScripts = firstPageName ? pageScriptsMap.get(firstPageName) : null;
     const firstParsed = firstPageName ? astroDataMap.get(firstPageName)?.parsed : null;
@@ -155,12 +178,29 @@ async function regeneratePageFiles(
       return ai - bi;
     });
 
+    // Collect shared CDN scripts from ALL pages, deduped by normalised key.
+    const sharedBodyCdn: import('./parser').ScriptTag[] = [];
+    const seenSharedCdnKeys = new Set<string>();
+    for (const scripts of pageScriptsMap.values()) {
+      for (const s of scripts.bodyCdn) {
+        const key = cdnKey(s.src);
+        if (sharedBodyCdnSrcs.has(key) && !seenSharedCdnKeys.has(key)) {
+          sharedBodyCdn.push(s);
+          seenSharedCdnKeys.add(key);
+        }
+      }
+    }
+    const hasUniqueCdn = [...pageScriptsMap.values()].some(
+      scripts => scripts.bodyCdn.some(s => !sharedBodyCdnSrcs.has(cdnKey(s.src)))
+    );
+
     await generateBaseLayout(projectDir, {
       cssFiles: cssFilesOrdered,
       headCdnScripts: firstScripts?.headCdn ?? [],
       headInlineScripts: firstScripts?.headInline ?? [],
-      bodyCdnScripts: firstScripts?.bodyCdn ?? [],
+      bodyCdnScripts: sharedBodyCdn,
       sharedBodyInlineScripts: Array.from(sharedBodyInlineSet),
+      uniqueBodyCdnSlot: hasUniqueCdn,
     });
 
     // Write Vue SFC + Astro wrapper per page
@@ -180,14 +220,28 @@ async function regeneratePageFiles(
       // collections) + SSR'd Vue page. Keeps extract and convert in lockstep.
       const scripts = pageScriptsMap.get(pageName);
       const uniqueScripts = scripts?.bodyInline.filter(s => !sharedBodyInlineSet.has(s)) ?? [];
+      const uniqueCdnScripts = scripts?.bodyCdn.filter(s => !sharedBodyCdnSrcs.has(cdnKey(s.src))) ?? [];
       const pageCollections = Object.keys(manifest?.pages[pageName]?.collections || {});
+      // For Strapi globals fetches, include ALL shared-global components on
+      // this page (not just top-level). Nested components (e.g. AnnouncementBar
+      // inside Sitenav) still have their own single type and need their data
+      // fetched so Sitenav can forward it via :globals.
+      const allSharedOnPage = manifest
+        ? Object.entries(manifest.global?.components || {})
+            .filter(([, c]) => {
+              const comp = c as any;
+              return comp.role !== 'collection-item' && (comp.pages || []).includes(pageName);
+            })
+            .map(([name]) => name)
+        : pageComponentMap.get(pageName) || [];
       await writeAstroVuePage(projectDir, htmlFile, pageName, {
         title: parsed.title,
         wfPage: parsed.wfPage,
         wfSite: parsed.wfSite,
         bodyClass: parsed.bodyClass,
         uniqueBodyInlineScripts: uniqueScripts,
-      }, editorEnabled, pageCollections, pageComponentMap.get(pageName) || []);
+        uniqueBodyCdnScripts: uniqueCdnScripts,
+      }, editorEnabled, pageCollections, allSharedOnPage);
     }
   } else {
     for (const htmlFile of htmlFiles) {
@@ -314,16 +368,10 @@ export async function runExtractCollections(
     const componentEntries = Object.entries(existingManifest.global?.components || {});
     sharedComponents = componentEntries.map(([, c]) => c as SharedComponent);
 
-    for (const [pageName] of Object.entries(existingManifest.pages)) {
-      const names: string[] = [];
-      for (const [compName, comp] of componentEntries) {
-        if ((comp as any).pages?.includes(pageName)) names.push(compName);
-      }
-      if (names.length) pageComponentMap.set(pageName, names);
-    }
-
     // Apply component replacements in htmlContentMap so re-generated pages still
-    // have the component tags
+    // have the component tags. Apply in manifest order so nested components
+    // (e.g. AnnouncementBar inside Sitenav) are consumed by their parent's
+    // replacement and don't appear as top-level page imports.
     for (const component of sharedComponents) {
       if (component.role === 'collection-item') continue;
       for (const [pageName, html] of htmlContentMap.entries()) {
@@ -335,6 +383,28 @@ export async function runExtractCollections(
         }
       }
     }
+
+    // Build pageComponentMap from what's actually in the final HTML, not the
+    // manifest. Components nested inside another (their marker consumed by the
+    // parent's replacement) are excluded from the page's import list.
+    const topLevelNames = sharedComponents
+      .filter(c => c.role !== 'collection-item')
+      .map(c => c.name);
+    for (const [pageName, html] of htmlContentMap.entries()) {
+      const topLevel = topLevelNames.filter(name =>
+        html.includes(`<!--COMPONENT:${name}-->`)
+      );
+      if (topLevel.length > 0) pageComponentMap.set(pageName, topLevel);
+    }
+
+    // Update topLevelPages on each shared component so transformAllVuePages
+    // only imports top-level components on each page.
+    sharedComponents = sharedComponents.map(c => ({
+      ...c,
+      topLevelPages: [...pageComponentMap.entries()]
+        .filter(([, names]) => names.includes(c.name))
+        .map(([p]) => p),
+    }));
   } catch {
     // No existing manifest — start fresh
   }
@@ -454,7 +524,38 @@ export async function runExtractComponent(
   const assets = await scanAssets(inputDir);
   console.log(pc.green(`  ✓ ${htmlFiles.length} HTML files`));
 
-  // Find which pages have the selector and grab the first occurrence as template
+  // Apply existing component markers to htmlContentMap FIRST, before capturing
+  // the new component's outer HTML. This ensures a parent component (e.g.
+  // Sitenav) gets its .vue file written with child markers already in place
+  // (e.g. <!--COMPONENT:AnnouncementBar-->), so the generated Sitenav.vue
+  // contains <AnnouncementBar/> rather than the raw announcement bar HTML.
+  let existingSharedComponents: SharedComponent[] = [];
+
+  try {
+    const existingManifest = await readManifest(projectDir);
+    const componentEntries = Object.entries(existingManifest.global?.components || {});
+    existingSharedComponents = componentEntries
+      .map(([, c]) => c as SharedComponent)
+      .filter(c => c.name !== componentName); // exclude the one we're replacing
+
+    for (const component of existingSharedComponents) {
+      if (component.role === 'collection-item') continue;
+      for (const [pageName, html] of htmlContentMap.entries()) {
+        if (!component.pages?.includes(pageName)) continue;
+        const $ = cheerio.load(html);
+        if ($(component.selector).length > 0) {
+          replaceWithComponent($, component.selector, component.name);
+          htmlContentMap.set(pageName, $.html());
+        }
+      }
+    }
+  } catch {
+    // No existing manifest — fresh start
+  }
+
+  // Now capture the new component's outer HTML. If any children of this
+  // component were previously extracted, their markers are already in the HTML
+  // so the written .vue file will reference them as <ChildComponent/>.
   const pagesWithComponent: string[] = [];
   let componentOuterHtml: string | null = null;
 
@@ -477,16 +578,55 @@ export async function runExtractComponent(
 
   console.log(pc.green(`  ✓ Found "${selector}" on ${pagesWithComponent.length} page(s): ${pagesWithComponent.join(', ')}`));
 
-  // Write the component Vue file (static for now; transformer will add bindings)
+  // Write the component Vue file (static for now; transformer will add bindings).
+  // If the outer HTML contains <!--COMPONENT:X--> markers (nested children that
+  // were extracted earlier), replace them with <X/> tags and add sibling imports.
   const componentsDir = sharedComponentsDir(projectDir, target);
   await fs.ensureDir(componentsDir);
   const componentFilePath = path.join(componentsDir, `${componentName}.vue`);
 
-  const componentFileContent = `<template>\n${componentOuterHtml}\n</template>\n`;
-  await fs.writeFile(componentFilePath, componentFileContent, 'utf-8');
-  console.log(pc.green(`  ✓ Created components/${componentName}.vue`));
+  // Normalise internal links and image paths so they are root-relative and
+  // work correctly from nested routes like /offerings/* or /creating-value/*.
+  // Only touches <a href>, <img src>, and common asset attributes — no scripts
+  // removed, no other changes.
+  const sourceFile = pagesWithComponent[0] ? pagesWithComponent[0] + '.html' : undefined;
+  const $comp = cheerio.load(componentOuterHtml);
+  $comp('a[href]').each((_, el) => {
+    const href = $comp(el).attr('href')!;
+    const isExternal = /^(https?:|mailto:|tel:|#)/.test(href);
+    if (!isExternal) $comp(el).attr('href', normalizeRoute(href, sourceFile));
+  });
+  $comp('img').each((_, el) => {
+    const src = $comp(el).attr('src');
+    if (src) $comp(el).attr('src', normalizePublicAssetPath(src));
+    const dataSrc = $comp(el).attr('data-src');
+    if (dataSrc) $comp(el).attr('data-src', normalizePublicAssetPath(dataSrc));
+    $comp(el).removeAttr('srcset');
+    $comp(el).removeAttr('sizes');
+  });
+  $comp('[data-src]').not('img').each((_, el) => {
+    const src = $comp(el).attr('data-src')!;
+    $comp(el).attr('data-src', normalizePublicAssetPath(src));
+  });
+  componentOuterHtml = $comp.html($comp('body').children()) as string || componentOuterHtml;
 
-  // Apply component marker to htmlContentMap for affected pages
+  // Keep <!--COMPONENT:X--> markers as-is in the written file. Cheerio
+  // preserves comments so they survive the reactive transform step, where
+  // restoreComponentTags converts them to <X /> with correct PascalCase.
+  // Converting to <X /> here would cause Cheerio to lowercase the tag.
+  const childMarkerRe = /<!--COMPONENT:(\w+)-->/g;
+  const childNames = [...componentOuterHtml.matchAll(childMarkerRe)].map(m => m[1]);
+  const childImports = childNames
+    .map(name => `import ${name} from './${name}.vue';`)
+    .join('\n');
+  const componentFileContent = childImports
+    ? `<script setup lang="ts">\n${childImports}\n</script>\n\n<template>\n${componentOuterHtml}\n</template>\n`
+    : `<template>\n${componentOuterHtml}\n</template>\n`;
+
+  await fs.writeFile(componentFilePath, componentFileContent, 'utf-8');
+  console.log(pc.green(`  ✓ Created components/${componentName}.vue${childNames.length ? ` (imports: ${childNames.join(', ')})` : ''}`));
+
+  // Apply the new component's marker to pages
   for (const pageName of pagesWithComponent) {
     const html = htmlContentMap.get(pageName)!;
     const $ = cheerio.load(html);
@@ -494,53 +634,35 @@ export async function runExtractComponent(
     htmlContentMap.set(pageName, $.html());
   }
 
-  // Also carry over any previously extracted components
-  let existingSharedComponents: SharedComponent[] = [];
+  // Build pageComponentMap from what is actually present in the final page HTML,
+  // NOT from the manifest. A component whose marker was consumed inside a parent
+  // (e.g. AnnouncementBar inside Sitenav) will have no marker left in the page
+  // HTML — so it correctly gets dropped from the page's import list and only
+  // the parent (Sitenav) remains.
   const pageComponentMap = new Map<string, string[]>();
-
-  try {
-    const existingManifest = await readManifest(projectDir);
-    const componentEntries = Object.entries(existingManifest.global?.components || {});
-    existingSharedComponents = componentEntries
-      .map(([, c]) => c as SharedComponent)
-      .filter(c => c.name !== componentName); // exclude the one we're replacing
-
-    for (const [pageName] of Object.entries(existingManifest.pages)) {
-      const names: string[] = [];
-      for (const [compName, comp] of componentEntries) {
-        if (compName === componentName) continue;
-        if ((comp as any).pages?.includes(pageName)) names.push(compName);
-      }
-      if (names.length) pageComponentMap.set(pageName, names);
-    }
-
-    // Apply existing component markers to the htmlContentMap too
-    for (const component of existingSharedComponents) {
-      if (component.role === 'collection-item') continue;
-      for (const [pageName, html] of htmlContentMap.entries()) {
-        if (!component.pages?.includes(pageName)) continue;
-        const $ = cheerio.load(html);
-        if ($(component.selector).length > 0) {
-          replaceWithComponent($, component.selector, component.name);
-          htmlContentMap.set(pageName, $.html());
-        }
-      }
-    }
-  } catch {
-    // No existing manifest — fresh start
+  const allComponentNames = [
+    ...existingSharedComponents.filter(c => c.role !== 'collection-item').map(c => c.name),
+    componentName,
+  ];
+  for (const [pageName, html] of htmlContentMap.entries()) {
+    const topLevel = allComponentNames.filter(name =>
+      html.includes(`<!--COMPONENT:${name}-->`)
+    );
+    if (topLevel.length > 0) pageComponentMap.set(pageName, topLevel);
   }
 
-  // Add new component to each page's import list
-  for (const pageName of pagesWithComponent) {
-    const existing = pageComponentMap.get(pageName) || [];
-    pageComponentMap.set(pageName, [...existing, componentName]);
-  }
+  // Build the SharedComponent descriptor for manifest generation.
+  // Record topLevelPages from the HTML scan so transformAllVuePages can import
+  // only the top-level components on each page (not nested children).
+  const topLevelPagesForNew = [...pageComponentMap.entries()]
+    .filter(([, names]) => names.includes(componentName))
+    .map(([p]) => p);
 
-  // Build the SharedComponent descriptor for manifest generation
   const newSharedComponent: SharedComponent = {
     name: componentName,
     selector,
     pages: pagesWithComponent,
+    topLevelPages: topLevelPagesForNew,
     role,
     contentMode: (options.contentMode as any) || (role === 'collection-item' ? 'auto' : 'shared-global'),
     confidence: 'high',
@@ -553,7 +675,15 @@ export async function runExtractComponent(
       : undefined,
   };
 
-  const allSharedComponents = [...existingSharedComponents, newSharedComponent];
+  // Also update topLevelPages for existing components — nesting may have changed.
+  const updatedExistingComponents = existingSharedComponents.map(c => ({
+    ...c,
+    topLevelPages: [...pageComponentMap.entries()]
+      .filter(([, names]) => names.includes(c.name))
+      .map(([p]) => p),
+  }));
+
+  const allSharedComponents = [...updatedExistingComponents, newSharedComponent];
 
   // Collection info preserved from state
   const collectionClasses = stateCollections.map(c => c.className);

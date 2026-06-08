@@ -505,8 +505,11 @@ program
         });
       }
 
-      // Optional Strapi server setup
-      if (cmsProvider === "strapi" && !skipPrompts) {
+      // Optional Strapi server setup — prompt disabled for now, use the
+      // dedicated `cms setup-strapi` command instead. Kept in source behind
+      // ENABLE_STRAPI_SETUP_PROMPT; --scaffold-strapi / config still work.
+      const ENABLE_STRAPI_SETUP_PROMPT = false as boolean;
+      if (ENABLE_STRAPI_SETUP_PROMPT && cmsProvider === "strapi" && !skipPrompts) {
         console.log("");
         const shouldSetup = await confirm(
           pc.cyan("🎯 Would you like to set up Strapi now?"),
@@ -553,6 +556,9 @@ program
           console.log(pc.dim("\n💡 You can setup Strapi later with:"));
           console.log(pc.dim(`   cms setup-strapi ${output} <strapi-directory>`));
         }
+      } else if (cmsProvider === "strapi" && !skipPrompts) {
+        console.log(pc.dim("\n💡 Run setup-strapi when ready:"));
+        console.log(pc.dim(`   cms setup-strapi ${output} <strapi-directory>`));
       }
     } catch (error) {
       console.error(pc.red("\nConversion failed:"));

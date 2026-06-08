@@ -1,6 +1,6 @@
 CLI := node packages/converter/dist/cli.mjs
-DIR ?= ../qzcap
-SRC ?= ~/Downloads/quantum-zenith-capital-website.webflow/
+DIR ?= ../qzgroup
+SRC ?= ~/Downloads/quantum-zenith-group-check.webflow
 
 default: help
 

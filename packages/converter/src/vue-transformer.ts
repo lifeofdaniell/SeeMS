@@ -253,7 +253,16 @@ export async function transformVueToReactive(
   const templateMatch = vueContent.match(/<template>([\s\S]*?)<\/template>/);
   if (!templateMatch) return;
 
-  const componentNames = Object.keys(manifest.global?.components || {});
+  // Only import components that are top-level on this page (not nested inside
+  // another component). topLevelPages is set by the extract commands. When
+  // absent (e.g. older manifest or convert path), fall back to component.pages.
+  const componentNames = Object.entries(manifest.global?.components || {})
+    .filter(([, c]) => {
+      const topLevel = (c as any).topLevelPages as string[] | undefined;
+      const pageList = topLevel ?? (c as any).pages ?? [];
+      return pageList.includes(pageName);
+    })
+    .map(([name]) => name);
   const templateContent = maskComponentTags(templateMatch[1], componentNames);
 
   // Wrap the template in a sentinel root before parsing. A component marker
@@ -347,7 +356,6 @@ export async function transformSharedComponentsToReactive(
 
   for (const [componentName, component] of Object.entries(components)) {
     const fields = component.fields || {};
-    if (Object.keys(fields).length === 0) continue;
 
     const filePath = path.join(componentsDir, `${componentName}.vue`);
     if (!(await fs.pathExists(filePath))) continue;
@@ -356,7 +364,44 @@ export async function transformSharedComponentsToReactive(
     const templateMatch = vueContent.match(/<template>([\s\S]*?)<\/template>/);
     if (!templateMatch) continue;
 
-    const $ = cheerio.load(templateMatch[1], { xmlMode: false });
+    // Always restore child component markers (<!--COMPONENT:X-->) to <X />
+    // regardless of whether this component has CMS fields, so nested
+    // components written as markers survive into the final .vue file.
+    const existingScriptMatch = vueContent.match(/<script\b[^>]*>([\s\S]*?)<\/script>/);
+    const existingImportLines = existingScriptMatch
+      ? existingScriptMatch[1].split('\n').filter(l => l.trimStart().startsWith('import '))
+      : [];
+    const existingImports = existingImportLines.join('\n');
+    const childNames = existingImportLines
+      .map(l => { const m = l.match(/^import\s+(\w+)\s+from/); return m ? m[1] : null; })
+      .filter((n): n is string => n !== null);
+
+    if (Object.keys(fields).length === 0) {
+      // No CMS fields — only marker restoration needed.
+      if (childNames.length > 0) {
+        const restored = restoreComponentTags(templateMatch[1], childNames);
+        if (restored !== templateMatch[1]) {
+          const scriptBlock = existingImports ? `<script setup lang="ts">\n${existingImports}\n</script>\n\n` : '';
+          await fs.writeFile(filePath, `${scriptBlock}<template>\n${restored.trim()}\n</template>\n`, 'utf-8');
+        }
+      }
+      continue;
+    }
+
+    // Mask any already-processed child component tags back to comment markers
+    // before loading into Cheerio. On subsequent runs (e.g. re-extract),
+    // Cheerio would lowercase the tag name and encode `&&` → `&amp;&amp;` in
+    // Vue binding attributes, corrupting the output. Masking first means
+    // Cheerio only ever sees a plain comment, which it preserves untouched,
+    // and restoreComponentTags below converts it back to the correct tag.
+    let templateSource = templateMatch[1];
+    for (const child of childNames) {
+      templateSource = templateSource
+        .replace(new RegExp(`<${child}(\\s[^>]*)?>\\s*<\\/${child}>`, 'g'), `<!--COMPONENT:${child}-->`)
+        .replace(new RegExp(`<${child}(\\s[^>]*)?\\/>`, 'g'), `<!--COMPONENT:${child}-->`);
+    }
+
+    const $ = cheerio.load(templateSource, { xmlMode: false });
     const isCollectionItem = component.role === "collection-item";
     const isPerPage = component.contentMode === "per-page";
     const contentSource = isCollectionItem ? "item" : isPerPage ? "componentContent" : "content";
@@ -391,7 +436,8 @@ export async function transformSharedComponentsToReactive(
     const isAstroVue = options.target === "astro-vue";
     // Nuxt auto-imports the composable; astro shared sections receive their own
     // single type's content as a prop from the page (no client-side fetch).
-    const importLine = "";
+    // For astro-vue, also accept `globals` so nested child components can
+    // receive their own Strapi data (forwarded from the page via :globals).
     const contentSetup = isCollectionItem
       ? `const props = defineProps<{ item?: Record<string, any> }>();
 const item = props.item ?? {};`
@@ -399,11 +445,19 @@ const item = props.item ?? {};`
       ? `const props = defineProps<{ content: Record<string, any> }>();
 const componentContent = props.content || {};`
       : isAstroVue
-      ? `const props = defineProps<{ content?: Record<string, any> }>();
-const content = props.content ?? {};`
+      ? `const props = defineProps<{ content?: Record<string, any>; globals?: Record<string, any> }>();
+const content = props.content ?? {};
+const globals = props.globals;`
       : `const { content } = useStrapiContent('global');`;
+
+    // Restore child component markers → <X /> after Cheerio processing.
+    // Pass target so astro-vue child components get :content and :globals bindings.
+    if (childNames.length > 0) {
+      transformedTemplate = restoreComponentTags(transformedTemplate, childNames, [], options.target);
+    }
+
     const scriptSetup = `<script setup lang="ts">
-${importLine}${contentSetup}
+${existingImports ? existingImports + '\n' : ''}${contentSetup}
 </script>`;
 
     await fs.writeFile(filePath, `${scriptSetup}
@@ -429,7 +483,8 @@ function restoreComponentTags(
       : target === "astro-vue"
       // astro shared section: feed it its own single type's content from the
       // page's `globals` (the .astro fetches /api/<type> per shared component).
-      ? `<${name} :content="globals && globals['${sharedComponentTypeName(name)}']" />`
+      // Also forward globals so nested child components can access their data.
+      ? `<${name} :content="globals && globals['${sharedComponentTypeName(name)}']" :globals="globals" />`
       : `<${name} />`;
     restored = restored
       .replace(new RegExp(`<!--COMPONENT:${name}-->`, "g"), tag)
