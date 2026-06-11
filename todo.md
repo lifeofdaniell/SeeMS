@@ -1,0 +1,3 @@
+-add an undo step to to extract collection flow
+- we could add a force flag (-f) for extract collections that would automatically reinstall the schema into strapi
+- add variant extraction logic to wire into props, so variants are not flattened to hell
